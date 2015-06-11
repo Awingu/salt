@@ -733,7 +733,23 @@ class Loader(object):
                     continue
 
             if hasattr(mod, '__opts__'):
+                # this is necessary to prevent following situation:
+                # * start a minion in multimaster with one master stopped and one running
+                # * perform a call from the running master
+                # * start the stopped master
+                # * now you will no longer be able to perform a call from the first master
+                # this because on the minion of the first master
+                # the 'master' key in its opts will have changed to the second master
+                keys_to_keep = {}
+                for key in [
+                        'master',
+                        'master_ip',
+                        'master_uri',
+                ]:
+                    if key in mod.__opts__:
+                        keys_to_keep[key] = mod.__opts__[key]
                 mod.__opts__.update(self.opts)
+                mod.__opts__.update(keys_to_keep)
             else:
                 mod.__opts__ = self.opts
 

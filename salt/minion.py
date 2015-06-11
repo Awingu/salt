@@ -20,6 +20,8 @@ import threading
 import time
 import traceback
 import types
+import pprint
+import datetime
 from random import randint, shuffle
 
 # Import third party libs
@@ -73,7 +75,32 @@ from salt.utils.debug import enable_sigusr1_handler
 from salt.utils.event import tagify
 import salt.syspaths
 
-log = logging.getLogger(__name__)
+
+# allows us to call something before each log message
+class ExtendedLogger(object):
+
+    def _wrapper(foo):
+        def bar(self, *args, **kwargs):
+            if self.func:
+                self.func(*self.args, **self.kwargs)
+            return foo(*args, **kwargs)
+        return bar
+
+    logger = logging.getLogger(__name__)
+    func = None
+    args = []
+    kwargs = {}
+
+    debug = _wrapper(logger.debug)
+    info = _wrapper(logger.info)
+    warning = _wrapper(logger.warning)
+    critical = _wrapper(logger.critical)
+    error = _wrapper(logger.error)
+    exception = _wrapper(logger.exception)
+    trace = _wrapper(logger.trace)
+
+log = ExtendedLogger()
+
 
 # To set up a minion:
 # 1. Read in the configuration
@@ -227,6 +254,22 @@ def load_args_and_kwargs(func, args, data=None):
             _kwargs['__pub_{0}'.format(key)] = val
 
     return _args, _kwargs
+
+
+# catch and log exceptions occured during execution of the thread
+class LoggingThread(threading.Thread):
+
+    def __init__(self, *args, **kwargs):
+        super(LoggingThread, self).__init__(*args, **kwargs)
+        self._run = self.run
+        self.run = self._wrapper
+
+    def _wrapper(self):
+        try:
+            self._run()
+        except:
+            log.exception('Exception during thread:')
+            raise
 
 
 class SMinion(object):
@@ -489,7 +532,7 @@ class MultiMinion(MinionBase):
             else:
                 ret[minion.opts['master']] = {
                     'minion': minion,
-                    'generator': minion.tune_in_no_block()}
+                    'generator': None}
         return ret
 
     # Multi Master Tune In
@@ -500,17 +543,35 @@ class MultiMinion(MinionBase):
         self._prepare_minion_event_system()
         self.poller.register(self.epull_sock, zmq.POLLIN)
 
-        # Prepare the minion generators
         minions = self.minions()
         loop_interval = int(self.opts['loop_interval'])
-        last = time.time()
         auth_wait = self.opts['acceptance_wait_time']
-        max_wait = auth_wait * 6
+
+        #log.func = self.log_minion_information
+        #log.args = (minions,)
 
         while True:
+            # Prepare the minion generators
+            connected_minions = {master: minions[master] for master in minions
+                                 if minions[master]['minion'].connected}
+            for master in list(connected_minions.keys()):
+                minion = connected_minions[master]
+                if not minion['generator']:
+                    try:
+                        generator = minion['minion'].tune_in_no_block()
+                        minion['generator'] = generator
+                    except SaltClientError:
+                        del connected_minions[master]
+                        continue
+            if not connected_minions:
+                log.debug('No masters available yet, '
+                          'waiting {0} seconds.'.format(auth_wait))
+                time.sleep(auth_wait)
+                continue
+
             module_refresh = False
             pillar_refresh = False
-            for minion in minions.values():
+            for minion in connected_minions.values():
                 if isinstance(minion, dict):
                     minion = minion['minion']
                 if not hasattr(minion, 'schedule'):
@@ -534,28 +595,42 @@ class MultiMinion(MinionBase):
                 except Exception:
                     pass
             # get commands from each master
-            for master, minion in minions.items():
-                if 'generator' not in minion:
-                    if time.time() - auth_wait > last:
-                        last = time.time()
-                        if auth_wait < max_wait:
-                            auth_wait += auth_wait
-                        try:
-                            if not isinstance(minion, dict):
-                                minions[master] = {'minion': minion}
-                            t_minion = Minion(minion, 5, False)
-                            minions[master]['minion'] = t_minion
-                            minions[master]['generator'] = t_minion.tune_in_no_block()
-                            auth_wait = self.opts['acceptance_wait_time']
-                        except SaltClientError:
-                            continue
-                    else:
-                        continue
+            for master, minion in connected_minions.items():
                 if module_refresh:
                     minion['minion'].module_refresh()
                 if pillar_refresh:
                     minion['minion'].pillar_refresh()
                 minion['generator'].next()
+
+    def log_minion_information(self, minions):
+        info = pprint.pformat(self.get_minion_information(minions))
+        log.logger.debug('MINION INFORMATION:\n{0}'.format(info))
+
+    def get_minion_information(self, minions):
+        info_dict = {}
+        for master in list(minions.keys()):
+            minion = minions[master]['minion']
+            if minion.authentication_thread is None:
+                authentication_thread_status = 'not created'
+            elif minion.authentication_thread.is_alive():
+                authentication_thread_status = 'running'
+            else:
+                authentication_thread_status = 'stopped'
+            if hasattr(minion, 'opts'):
+                opts_master = minion.opts.get('master', 'no master in opts')
+                opts_multiprocessing = minion.opts.get(
+                    'multiprocessing', 'no multiprocessing in opts')
+            else:
+                opts_master = 'no opts on minion'
+                opts_multiprocessing = 'no opts on minion'
+            info_dict[master] = {
+                'generator': minions[master]['generator'],
+                'connected': minion.connected,
+                'authentication_thread_status': authentication_thread_status,
+                "opts['master']": opts_master,
+                "opts['multiprocessing']": opts_multiprocessing,
+            }
+        return info_dict
 
 
 class Minion(MinionBase):
@@ -569,6 +644,8 @@ class Minion(MinionBase):
         Pass in the options dict
         '''
         self._running = None
+        self.connected = False
+        self.authentication_thread = None
 
         # Warn if ZMQ < 3.2
         if HAS_ZMQ:
@@ -596,6 +673,9 @@ class Minion(MinionBase):
                                           timeout,
                                           safe)
 
+        # __init__() from MinionBase is called in Minion.eval_master()
+
+    def _finish_init(self, opts):
         self.opts['pillar'] = salt.pillar.get_pillar(
             opts,
             opts['grains'],
@@ -661,7 +741,7 @@ class Minion(MinionBase):
             log.debug('I am {0} and I am not supposed to start any proxies. '
                       '(Likely not a problem)'.format(self.opts['id']))
 
-        # __init__() from MinionBase is called in Minion.eval_master()
+        self.connected = True
 
     def eval_master(self,
                     opts,
@@ -766,6 +846,7 @@ class Minion(MinionBase):
                        'the minions connection attempt.')
                 log.error(msg)
             else:
+                self._finish_init(opts)
                 self.connected = True
                 return opts['master']
 
@@ -773,15 +854,11 @@ class Minion(MinionBase):
         else:
             opts.update(resolve_dns(opts))
             super(Minion, self).__init__(opts)
-            if self.authenticate(timeout, safe) == 'full':
-                self.connected = False
-                msg = ('master {0} rejected the minions connection because too '
-                       'many minions are already connected.'.format(opts['master']))
-                log.error(msg)
-                sys.exit(salt.exitcodes.EX_GENERIC)
-            else:
-                self.connected = True
-                return opts['master']
+            self.authentication_thread = LoggingThread(
+                target=self.non_blocking_authenticate, args=(timeout, safe),
+                kwargs={'next': (self._finish_init, (opts,), {})})
+            self.authentication_thread.start()
+            return opts['master']
 
     def _prep_mod_opts(self):
         '''
@@ -893,8 +970,17 @@ class Minion(MinionBase):
                 else:
                     log.warning('Ignoring re-auth delay because jobs are running')
 
-            self.authenticate()
+            self.authentication_thread = LoggingThread(
+                target=self.non_blocking_authenticate, args=(5, True),
+                kwargs={'next': (self._finish_handle_aes, (load,), {})})
+            self.authentication_thread.start()
+        else:
+            self._finish_handle_aes(load, data)
+
+    def _finish_handle_aes(self, load, data=None):
+        if not data:
             data = self.crypticle.loads(load)
+        self.connected = True
 
         # Verify that the publication is valid
         if 'tgt' not in data or 'jid' not in data or 'fun' not in data \
@@ -977,7 +1063,7 @@ class Minion(MinionBase):
                 target=target, args=(instance, self.opts, data)
             )
         else:
-            process = threading.Thread(
+            process = LoggingThread(
                 target=target, args=(instance, self.opts, data),
                 name=data['jid']
             )
@@ -1348,6 +1434,19 @@ class Minion(MinionBase):
         '''
         return 'tcp://{ip}:{port}'.format(ip=self.opts['master_ip'],
                                           port=self.publish_port)
+
+    def non_blocking_authenticate(
+            self, timeout=60, safe=True, next=(None, (), {})):
+        self.connected = False
+        if self.authenticate(timeout, safe) == 'full':
+            msg = ('master rejected the minions connection because too '
+                   'many minions are already connected.')
+            log.error(msg)
+            sys.exit(salt.exitcodes.EX_GENERIC)
+        else:
+            foo, args, kwargs = next
+            if foo:
+                foo(*args, **kwargs)
 
     def authenticate(self, timeout=60, safe=True):
         '''
