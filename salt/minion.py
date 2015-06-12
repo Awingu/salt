@@ -1606,6 +1606,14 @@ class Minion(MinionBase):
         Lock onto the publisher. This is the main event loop for the minion
         :rtype : None
         '''
+        # wait for the minion to be connected to the master
+        auth_wait = self.opts['acceptance_wait_time']
+        while not self.connected:
+            log.debug('Master not available yet, '
+                      'waiting {0} seconds.'.format(auth_wait))
+            time.sleep(auth_wait)
+            continue
+
         self._pre_tune()
 
         # Properly exit if a SIGTERM is signalled
