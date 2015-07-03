@@ -268,7 +268,7 @@ class Minion(parsers.MinionOptionParser):
                     logger.warn('Exiting on Ctrl-c')
                 else:
                     logger.error(str(exc))
-            except SaltClientError as exc:
+            except:
                 logger.error(exc)
                 if self.config.get('restart_on_error'):
                     logger.warn('** Restarting minion **')
