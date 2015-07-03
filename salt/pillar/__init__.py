@@ -88,7 +88,7 @@ class RemotePillar(object):
         if self.ext:
             load['ext'] = self.ext
         # ret = self.sreq.send(load, tries=3, timeout=7200)
-        ret_pillar = self.sreq.crypted_transfer_decode_dictentry(load, dictkey='pillar', tries=3, timeout=7200)
+        ret_pillar = self.sreq.crypted_transfer_decode_dictentry(load, dictkey='pillar', tries=1, timeout=30)
 
         # key = self.auth.get_keys()
         # aes = key.private_decrypt(ret['key'], 4)
