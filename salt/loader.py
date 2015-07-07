@@ -18,6 +18,7 @@ from collections import MutableMapping
 from salt.exceptions import LoaderError
 from salt.template import check_render_pipe_str
 from salt.utils.decorators import Depends
+from salt.utils.odict import OrderedDict
 
 # Solve the Chicken and egg problem where grains need to run before any
 # of the modules are loaded and are generally available for any usage.
@@ -111,7 +112,7 @@ def _create_loader(
     )
 
 
-def minion_mods(opts, context=None, whitelist=None):
+def minion_mods(opts, context=None, whitelist=None, loaded_base_name=None):
     '''
     Load execution modules
 
@@ -124,10 +125,16 @@ def minion_mods(opts, context=None, whitelist=None):
         import salt.loader
 
         __opts__ = salt.config.minion_config('/etc/salt/minion')
+        __grains__ = salt.loader.grains(__opts__)
+        __opts__['grains'] = __grains__
         __salt__ = salt.loader.minion_mods(__opts__)
         __salt__['test.ping']()
     '''
-    load = _create_loader(opts, 'modules', 'module')
+    load = _create_loader(
+        opts,
+        'modules',
+        'module',
+        loaded_base_name=loaded_base_name)
     if context is None:
         context = {}
     pack = {'name': '__context__',
@@ -714,7 +721,7 @@ class Loader(object):
         '''
         Return a dict of functions found in the defined module_dirs
         '''
-        funcs = {}
+        funcs = OrderedDict()
         self.load_modules()
         for mod in self.modules:
             # If this is a proxy minion then MOST modules cannot work.  Therefore, require that
@@ -839,7 +846,7 @@ class Loader(object):
         self.modules = []
 
         log.trace('loading {0} in {1}'.format(self.tag, self.module_dirs))
-        names = {}
+        names = OrderedDict()
         disable = set(self.opts.get('disable_{0}s'.format(self.tag), []))
 
         cython_enabled = False
@@ -878,6 +885,11 @@ class Loader(object):
                         )
                     )
                     continue
+                if fn_.endswith(('.pyc', '.pyo')):
+                    non_compiled_filename = '{0}.py'.format(os.path.splitext(fn_)[0])
+                    if os.path.exists(os.path.join(mod_dir, non_compiled_filename)):
+                        # Let's just process the non compiled python modules
+                        continue
                 if (fn_.endswith(('.py', '.pyc', '.pyo', '.so'))
                         or (cython_enabled and fn_.endswith('.pyx'))
                         or os.path.isdir(os.path.join(mod_dir, fn_))):
@@ -887,6 +899,19 @@ class Loader(object):
                         _name = fn_[:extpos]
                     else:
                         _name = fn_
+                    if _name in names:
+                        # Since we load custom modules first, if this logic is true it means
+                        # that an internal module was shadowed by an external custom module
+                        log.trace(
+                            'The {0!r} module from {1!r} was shadowed by '
+                            'the module in {2!r}'.format(
+                                _name,
+                                mod_dir,
+                                names[_name],
+                            )
+                        )
+                        continue
+
                     names[_name] = os.path.join(mod_dir, fn_)
                 else:
                     log.trace(
@@ -1056,7 +1081,13 @@ class Loader(object):
                             end, module_name)
                     log.warning(msg)
                 else:
-                    virtual = mod.__virtual__()
+                    try:
+                        virtual = mod.__virtual__()
+                    except Exception as exc:
+                        log.error('Exception raised when processing __virtual__ function'
+                                  ' for {0}. Module will not be loaded {1}'.format(
+                                      module_name, exc))
+                        virtual = None
                 # Get the module's virtual name
                 virtualname = getattr(mod, '__virtualname__', virtual)
                 if not virtual:
@@ -1232,15 +1263,6 @@ class Loader(object):
         grains_data = {}
         funcs = self.gen_functions()
         for key, fun in funcs.items():
-            if not key.startswith('core.'):
-                continue
-            ret = fun()
-            if not isinstance(ret, dict):
-                continue
-            grains_data.update(ret)
-        for key, fun in funcs.items():
-            if key.startswith('core.'):
-                continue
             try:
                 ret = fun()
             except Exception:
@@ -1254,7 +1276,10 @@ class Loader(object):
                 continue
             if not isinstance(ret, dict):
                 continue
-            grains_data.update(ret)
+            # The OrderedDict of funcs has core grains at the end. So earlier
+            # grains are the ones which should override
+            ret.update(grains_data)
+            grains_data = ret
         # Write cache if enabled
         if self.opts.get('grains_cache', False):
             cumask = os.umask(077)
