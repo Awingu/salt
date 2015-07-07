@@ -506,11 +506,11 @@ class MultiMinion(MinionBase):
             return False
         minions = []
         for master in set(self.opts['master']):
-            s_opts = copy.copy(self.opts)
+            s_opts = copy.deepcopy(self.opts)
             s_opts['master'] = master
             s_opts['multimaster'] = True
             try:
-                minions.append(Minion(s_opts, 5, False))
+                minions.append(Minion(s_opts, 5, False, 'salt.loader.{0}'.format(master)))
             except SaltClientError as exc:
                 log.error('Error while bringing up minion for multi-master. Is master at {0} responding?'.format(master))
         if len(minions) == 0:
@@ -639,11 +639,12 @@ class Minion(MinionBase):
     and loads all of the functions into the minion
     '''
 
-    def __init__(self, opts, timeout=60, safe=True):  # pylint: disable=W0231
+    def __init__(self, opts, timeout=60, safe=True, loaded_base_name=None):  # pylint: disable=W0231
         '''
         Pass in the options dict
         '''
         self._running = None
+        self.loaded_base_name = loaded_base_name
         self.connected = False
         self.authentication_thread = None
 
@@ -714,7 +715,7 @@ class Minion(MinionBase):
                     'seconds': opts['master_alive_interval'],
                     'jid_include': True,
                     'maxrunning': 1,
-                    'kwargs': {'master_ip': self.opts['master'],
+                    'kwargs': {'master': self.opts['master'],
                                'connected': True}
                 }
             })
@@ -818,7 +819,7 @@ class Minion(MinionBase):
         if isinstance(opts['master'], list):
             conn = False
             # shuffle the masters and then loop through them
-            local_masters = copy.copy(opts['master'])
+            local_masters = copy.deepcopy(opts['master'])
 
             for master in local_masters:
                 opts['master'] = master
@@ -895,8 +896,8 @@ class Minion(MinionBase):
 
         self.opts['grains'] = salt.loader.grains(self.opts, force_refresh)
         if self.opts.get('multimaster', False):
-            s_opts = copy.copy(self.opts)
-            functions = salt.loader.minion_mods(s_opts)
+            s_opts = copy.deepcopy(self.opts)
+            functions = salt.loader.minion_mods(s_opts, loaded_base_name=self.loaded_base_name)
         else:
             functions = salt.loader.minion_mods(self.opts)
         returners = salt.loader.returners(self.opts, functions)
@@ -1050,10 +1051,6 @@ class Minion(MinionBase):
         # python needs to be able to reconstruct the reference on the other
         # side.
         instance = self
-        # If we are running in multi-master mode, re-inject opts into module funcs
-        if instance.opts.get('multimaster', False):
-            for func in instance.functions:
-                sys.modules[instance.functions[func].__module__].__opts__ = self.opts
         if self.opts['multiprocessing']:
             if sys.platform.startswith('win'):
                 # let python reconstruct the minion on the other side if we're
@@ -1264,6 +1261,9 @@ class Minion(MinionBase):
                     'id': self.opts['id'],
                     'jid': jid,
                     'fun': fun,
+                    'arg': ret.get('arg'),
+                    'tgt': ret.get('tgt'),
+                    'tgt_type': ret.get('tgt_type'),
                     'load': ret.get('__load__')}
             load['return'] = {}
             for key, value in ret.items():
@@ -1503,12 +1503,17 @@ class Minion(MinionBase):
         '''
         Refresh the pillar
         '''
-        self.opts['pillar'] = salt.pillar.get_pillar(
-            self.opts,
-            self.opts['grains'],
-            self.opts['id'],
-            self.opts['environment'],
-        ).compile_pillar()
+        try:
+            self.opts['pillar'] = salt.pillar.get_pillar(
+                self.opts,
+                self.opts['grains'],
+                self.opts['id'],
+                self.opts['environment'],
+            ).compile_pillar()
+        except SaltClientError:
+            # Do not exit if a pillar refresh fails.
+            log.error('Pillar data could not be refreshed. '
+                      'One or more masters may be down!')
         self.module_refresh(force_refresh)
 
     def manage_schedule(self, package):
@@ -1717,7 +1722,7 @@ class Minion(MinionBase):
                                    'seconds': self.opts['master_alive_interval'],
                                    'jid_include': True,
                                    'maxrunning': 2,
-                                   'kwargs': {'master_ip': self.opts['master'],
+                                   'kwargs': {'master': self.opts['master'],
                                               'connected': False}
                                 }
                                 self.schedule.modify_job(name='__master_alive',
@@ -1755,7 +1760,7 @@ class Minion(MinionBase):
                                            'seconds': self.opts['master_alive_interval'],
                                            'jid_include': True,
                                            'maxrunning': 2,
-                                           'kwargs': {'master_ip': self.opts['master'],
+                                           'kwargs': {'master': self.opts['master'],
                                                       'connected': True}
                                         }
                                         self.schedule.modify_job(name='__master_alive',
@@ -1773,7 +1778,7 @@ class Minion(MinionBase):
                                    'seconds': self.opts['master_alive_interval'],
                                    'jid_include': True,
                                    'maxrunning': 2,
-                                   'kwargs': {'master_ip': self.opts['master'],
+                                   'kwargs': {'master': self.opts['master'],
                                               'connected': True}
                                 }
 
