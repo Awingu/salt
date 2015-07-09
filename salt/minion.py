@@ -24,6 +24,8 @@ import pprint
 import datetime
 from random import randint, shuffle
 
+import six
+
 # Import third party libs
 try:
     import zmq
@@ -685,7 +687,19 @@ class Minion(MinionBase):
         ).compile_pillar()
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self._prep_mod_opts()
-        self.functions, self.returners = self._load_modules()
+        tries = 3
+        while tries:
+            try:
+                self.functions, self.returners = self._load_modules()
+                break
+            except RuntimeError:
+                log.warning('Got RuntimeError loading modules, retrying')
+                time.sleep(random.randint(0, 15))
+                tries -= 1
+        else:
+            log.exception('Got RuntimeError loading modules for 3 tries, giving up!')
+            six.reraise(*sys.exc_info())
+
         self.matcher = Matcher(self.opts, self.functions)
         self.proc_dir = get_proc_dir(opts['cachedir'])
         self.schedule = salt.utils.schedule.Schedule(
