@@ -687,18 +687,25 @@ class Minion(MinionBase):
         ).compile_pillar()
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self._prep_mod_opts()
-        tries = 3
-        while tries:
+        tries = 0
+        while True:
             try:
                 self.functions, self.returners = self._load_modules()
+                if tries:
+                    log.warning('Was able to load modules after '
+                             '{0} tries'.format(tries))
                 break
             except RuntimeError:
-                log.warning('Got RuntimeError loading modules, retrying')
-                time.sleep(random.randint(0, 15))
-                tries -= 1
-        else:
-            log.exception('Got RuntimeError loading modules for 3 tries, giving up!')
-            six.reraise(*sys.exc_info())
+                tries += 1
+                if tries < 3:
+                    sleep = randint(0, 15)
+                    log.warning('Got RuntimeError loading modules, '
+                                'retrying after {0} seconds'.format(sleep))
+                    time.sleep(sleep)
+                else:
+                    log.exception('Got RuntimeError loading modules for '
+                                  '3 tries, giving up!')
+                    six.reraise(*sys.exc_info())
 
         self.matcher = Matcher(self.opts, self.functions)
         self.proc_dir = get_proc_dir(opts['cachedir'])
