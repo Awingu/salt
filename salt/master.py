@@ -14,6 +14,7 @@ import errno
 import logging
 import tempfile
 import multiprocessing
+import traceback
 
 # Import third party libs
 import zmq
@@ -964,8 +965,9 @@ class AESFuncs(object):
             if saltenv not in file_roots:
                 file_roots[saltenv] = []
         mopts['file_roots'] = file_roots
-        mopts['env_order'] = self.opts['env_order']
         mopts['top_file_merging_strategy'] = self.opts['top_file_merging_strategy']
+        mopts['env_order'] = self.opts['env_order']
+        mopts['default_top'] = self.opts['default_top']
         if load.get('env_only'):
             return mopts
         mopts['renderer'] = self.opts['renderer']
@@ -1709,9 +1711,6 @@ class ClearFuncs(object):
             clear_load['groups'] = groups
             return self.loadauth.mk_token(clear_load)
         except Exception as exc:
-            import sys
-            import traceback
-
             type_, value_, traceback_ = sys.exc_info()
             log.error(
                 'Exception occurred while authenticating: {0}'.format(exc)
@@ -1868,9 +1867,6 @@ class ClearFuncs(object):
                     return ''
 
             except Exception as exc:
-                import sys
-                import traceback
-
                 type_, value_, traceback_ = sys.exc_info()
                 log.error(
                     'Exception occurred while authenticating: {0}'.format(exc)

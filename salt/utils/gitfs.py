@@ -68,6 +68,10 @@ except ImportError:
 try:
     import pygit2
     HAS_PYGIT2 = True
+    try:
+        GitError = pygit2.errors.GitError
+    except AttributeError:
+        GitError = Exception
 except ImportError:
     HAS_PYGIT2 = False
 
@@ -839,7 +843,7 @@ class Pygit2(GitProvider):
             origin.credentials = credentials
         try:
             fetch_results = origin.fetch()
-        except pygit2.errors.GitError as exc:
+        except GitError as exc:
             # Using exc.__str__() here to avoid deprecation warning
             # when referencing exc.message
             if 'unsupported url protocol' in exc.__str__().lower() \
@@ -2254,19 +2258,10 @@ class WinRepo(GitBase):
     '''
     Functionality specific to the winrepo runner
     '''
-    def __init__(self, opts):
+    def __init__(self, opts, winrepo_dir):
         self.role = 'winrepo'
         # Dulwich has no function to check out a branch/tag, so this will be
         # limited to GitPython and Pygit2 for the forseeable future.
-        if 'win_repo' in opts:
-            salt.utils.warn_until(
-                'Nitrogen',
-                'The \'win_repo\' config option is deprecated, please use '
-                '\'winrepo_dir\' instead.'
-            )
-            winrepo_dir = opts['win_repo']
-        else:
-            winrepo_dir = opts['winrepo_dir']
         GitBase.__init__(self,
                          opts,
                          valid_providers=('gitpython', 'pygit2'),

@@ -758,7 +758,7 @@ class State(object):
                                         func[func.rindex('.'):]
                                         )
                                 self.functions[f_key] = funcs[func]
-        self.states = salt.loader.states(self.opts, self.functions)
+        self.states = salt.loader.states(self.opts, self.functions, self.utils)
         self.rend = salt.loader.render(self.opts, self.functions, states=self.states)
 
     def module_refresh(self):
@@ -2305,7 +2305,10 @@ class BaseHighState(object):
                 'state_auto_order',
                 opts['state_auto_order'])
             opts['file_roots'] = mopts['file_roots']
-            opts['env_order'] = mopts['env_order']
+            opts['top_file_merging_strategy'] = mopts.get('top_file_merging_strategy',
+                                                          opts.get('top_file_merging_strategy'))
+            opts['env_order'] = mopts.get('env_order', opts.get('env_order', []))
+            opts['default_top'] = mopts.get('default_top', opts.get('default_top'))
             opts['state_events'] = mopts.get('state_events')
             opts['state_aggregate'] = mopts.get('state_aggregate', opts.get('state_aggregate', False))
             opts['jinja_lstrip_blocks'] = mopts.get('jinja_lstrip_blocks', False)
@@ -2329,15 +2332,15 @@ class BaseHighState(object):
             for ord_env in env_order:
                 if ord_env in env_intersection:
                     final_list.append(ord_env)
-            return final_list
+            return set(final_list)
 
         elif env_order:
-            return env_order
+            return set(env_order)
         else:
             for cenv in client_envs:
                 if cenv not in envs:
                     envs.append(cenv)
-            return envs
+            return set(envs)
 
     def get_tops(self):
         '''
@@ -2410,6 +2413,10 @@ class BaseHighState(object):
                             saltenv=saltenv
                         )
                     )
+            if found > 1:
+                log.warning('Top file merge strategy set to \'merge\' and multiple top files found. '
+                            'Top file merging order is undefined; '
+                            'for better results use \'same\' option')
 
         if found == 0:
             log.error('No contents found in top file')
@@ -3206,7 +3213,8 @@ class MasterState(State):
                 )
         # Load the states, but they should not be used in this class apart
         # from inspection
-        self.states = salt.loader.states(self.opts, self.functions)
+        self.utils = salt.loader.utils(self.opts)
+        self.states = salt.loader.states(self.opts, self.functions, self.utils)
         self.rend = salt.loader.render(self.opts, self.functions, states=self.states)
 
 

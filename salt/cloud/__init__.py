@@ -81,7 +81,8 @@ def enter_mainloop(target,
                    pool_size=None,
                    callback=None,
                    queue=None):
-    '''Manage a multiprocessing pool
+    '''
+    Manage a multiprocessing pool
 
     - If the queue does not output anything, the pool runs indefinitely
 
@@ -1178,12 +1179,11 @@ class Cloud(object):
         )
 
         if deploy:
-            if make_master is False and 'master' not in minion_dict:
-                raise SaltCloudConfigError(
-                    (
-                        'There\'s no master defined on the '
-                        '{0!r} VM settings'
-                    ).format(vm_['name'])
+            if not make_master and 'master' not in minion_dict:
+                log.warn(
+                    'There\'s no master defined on the {0!r} VM settings.'.format(
+                        vm_['name']
+                    )
                 )
 
             if 'pub_key' not in vm_ and 'priv_key' not in vm_:
@@ -1378,14 +1378,7 @@ class Cloud(object):
         del provider_details['profiles']
 
         for name in names:
-            name_exists = False
             if name in vms:
-                if 'state' in vms[name]:
-                    if vms[name]['state'].lower() != 'terminated':
-                        name_exists = True
-                else:
-                    name_exists = True
-            if name_exists:
                 msg = '{0} already exists under {1}:{2}'.format(
                     name, alias, driver
                 )
@@ -1722,7 +1715,15 @@ class Map(Cloud):
                             #   - bar1:
                             #   - bar2:
                             overrides = {}
-                        overrides.setdefault('name', name)
+                        try:
+                            overrides.setdefault('name', name)
+                        except AttributeError:
+                            log.error(
+                                'Cannot use \'name\' as a minion id in a cloud map as it '
+                                'is a reserved word. Please change \'name\' to a different '
+                                'minion id reference.'
+                            )
+                            return ''
                         entries[name] = overrides
                 map_[profile] = entries
                 continue
@@ -1885,32 +1886,17 @@ class Map(Cloud):
                         continue
 
                     # A machine by the same name exists
-                    for mdriver, state in six.iteritems(matching):
+                    for item in matching:
                         if name not in ret['create']:
                             # Machine already removed
                             break
 
-                        if mdriver not in ('aws', 'ec2') and \
-                                state.lower() != 'terminated':
-                            # Regarding other providers, simply remove
-                            # them for the create map.
-                            log.warn(
-                                '{0!r} already exists, removing from '
-                                'the create map'.format(name)
-                            )
-                            if 'existing' not in ret:
-                                ret['existing'] = {}
-                            ret['existing'][name] = ret['create'].pop(name)
-                            continue
+                        log.warn('{0!r} already exists, removing from '
+                                 'the create map.'.format(name))
 
-                        if state.lower() != 'terminated':
-                            log.info(
-                                '{0!r} already exists, removing '
-                                'from the create map'.format(name)
-                            )
-                            if 'existing' not in ret:
-                                ret['existing'] = {}
-                            ret['existing'][name] = ret['create'].pop(name)
+                        if 'existing' not in ret:
+                            ret['existing'] = {}
+                        ret['existing'][name] = ret['create'].pop(name)
 
         if 'hard' in self.opts and self.opts['hard']:
             if self.opts['enable_hard_maps'] is False:
