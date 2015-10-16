@@ -229,10 +229,10 @@ def present(
         profile=None,
         wait_for_sync=True):
     '''
-    Ensure the IAM role exists.
+    Ensure the ELB exists.
 
     name
-        Name of the IAM role.
+        Name of the ELB.
 
     availability_zones
         A list of availability zones for this ELB.
@@ -335,8 +335,7 @@ def present(
             name, region, key, keyid, profile
         )
         for cname in cnames:
-            _ret = __salt__['state.single'](
-                'boto_route53.present',
+            _ret = __states__['boto_route53.present'](
                 name=cname.get('name'),
                 value=lb['dns_name'],
                 zone=cname.get('zone'),
@@ -348,7 +347,6 @@ def present(
                 keyid=keyid,
                 profile=profile
             )
-            _ret = _ret.values()[0]
             ret['changes'] = dictupdate.update(ret['changes'], _ret['changes'])
             ret['comment'] = ' '.join([ret['comment'], _ret['comment']])
             if not _ret['result']:
@@ -374,15 +372,14 @@ def register_instances(name, instances, region=None, key=None, keyid=None,
 
     .. code-block:: yaml
 
-    add-instances:
-      boto_elb.register_instances:
-        - name: myloadbalancer
-        - instances:
-          - instance-id1
-          - instance-id2
+        add-instances:
+          boto_elb.register_instances:
+            - name: myloadbalancer
+            - instances:
+              - instance-id1
+              - instance-id2
     '''
     ret = {'name': name, 'result': None, 'comment': '', 'changes': {}}
-    ret['name'] = name
     lb = __salt__['boto_elb.exists'](name, region, key, keyid, profile)
     if lb:
         health = __salt__['boto_elb.get_instance_health'](name,
@@ -912,9 +909,8 @@ def _alarms_present(name, alarms, alarms_from_pillar, region, key, keyid, profil
             "keyid": keyid,
             "profile": profile,
         }
-        ret = __salt__["state.single"]('boto_cloudwatch_alarm.present', **kwargs)
-        results = next(six.itervalues(ret))
-        if not results["result"]:
+        results = __states__['boto_cloudwatch_alarm.present'](**kwargs)
+        if not results.get('result'):
             merged_return_value["result"] = results["result"]
         if results.get("changes", {}) != {}:
             merged_return_value["changes"][info["name"]] = results["changes"]

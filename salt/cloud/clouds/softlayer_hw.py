@@ -293,6 +293,12 @@ def create(vm_):
     )
     kwargs['prices'].append({'id': bandwidth})
 
+    post_uri = config.get_cloud_config_value(
+        'post_uri', vm_, __opts__, default=None
+    )
+    if post_uri:
+        kwargs['prices'].append({'id': post_uri})
+
     vlan_id = config.get_cloud_config_value(
         'vlan', vm_, __opts__, default=False
     )
@@ -372,9 +378,10 @@ def create(vm_):
         '''
         node_info = pass_conn.getVirtualGuests(id=response['id'], mask=mask)
         for node in node_info:
-            if node['id'] == response['id']:
-                if 'passwords' in node['operatingSystem'] and len(node['operatingSystem']['passwords']) > 0:
-                    return node['operatingSystem']['passwords'][0]['password']
+            if node['id'] == response['id'] \
+                    and 'passwords' in node['operatingSystem'] \
+                    and len(node['operatingSystem']['passwords']) > 0:
+                return node['operatingSystem']['passwords'][0]['password']
         time.sleep(5)
         return False
 
@@ -423,7 +430,7 @@ def list_nodes_full(mask='mask[id, hostname, primaryIpAddress, \
         )
 
     ret = {}
-    conn = get_conn(service='Account')
+    conn = get_conn(service='SoftLayer_Account')
     response = conn.getHardware(mask=mask)
 
     for node in response:
@@ -543,7 +550,7 @@ def list_vlans(call=None):
             'The list_vlans function must be called with -f or --function.'
         )
 
-    conn = get_conn(service='Account')
+    conn = get_conn(service='SoftLayer_Account')
     return conn.getNetworkVlans()
 
 
@@ -609,6 +616,9 @@ def show_all_prices(call=None, kwargs=None):
             'The avail_images function must be called with '
             '-f or --function, or with the --list-images option'
         )
+
+    if kwargs is None:
+        kwargs = {}
 
     conn = get_conn(service='SoftLayer_Product_Package')
     if 'code' not in kwargs:

@@ -6,6 +6,7 @@ involves preparing the three listeners and the workers needed by the master.
 
 # Import python libs
 from __future__ import absolute_import
+import copy
 import os
 import re
 import sys
@@ -386,22 +387,11 @@ class Master(SMaster):
         errors = []
         critical_errors = []
 
-        if salt.utils.is_windows() and self.opts['user'] == 'root':
-            # 'root' doesn't typically exist on Windows. Use the current user
-            # home directory instead.
-            home = os.path.expanduser('~' + salt.utils.get_user())
-        else:
-            home = os.path.expanduser('~' + self.opts['user'])
         try:
-            if salt.utils.is_windows() and not os.path.isdir(home):
-                # On Windows, Service account home directories may not
-                # initially exist. If this is the case, make sure the
-                # directory exists before continuing.
-                os.mkdir(home, 0o755)
-            os.chdir(home)
+            os.chdir('/')
         except OSError as err:
             errors.append(
-                'Cannot change to home directory {0} ({1})'.format(home, err)
+                'Cannot change to root directory ({1})'.format(err)
             )
 
         fileserver = salt.fileserver.Fileserver(self.opts)
@@ -420,13 +410,21 @@ class Master(SMaster):
         if not self.opts['fileserver_backend']:
             errors.append('No fileserver backends are configured')
 
-        if any('git' in ext_pillar
-               for ext_pillar in self.opts.get('ext_pillar', [])):
+        non_legacy_git_pillars = [
+            x for x in self.opts.get('ext_pillar', [])
+            if 'git' in x
+            and not isinstance(x['git'], six.string_types)
+        ]
+        if non_legacy_git_pillars:
+            new_opts = copy.deepcopy(self.opts)
+            new_opts['ext_pillar'] = non_legacy_git_pillars
             try:
                 # Init any values needed by the git ext pillar
-                salt.utils.gitfs.GitPillar(self.opts)
+                salt.utils.gitfs.GitPillar(new_opts)
             except FileserverConfigError as exc:
                 critical_errors.append(exc.strerror)
+            finally:
+                del new_opts
 
         if errors or critical_errors:
             for error in errors:
@@ -1189,8 +1187,11 @@ class AESFuncs(object):
 
         :param dict load: The minion payload
         '''
-        salt.utils.job.store_job(
-            self.opts, load, event=self.event, mminion=self.mminion)
+        try:
+            salt.utils.job.store_job(
+                self.opts, load, event=self.event, mminion=self.mminion)
+        except salt.exception.SaltCacheError:
+            log.error('Could not store job information for load: {0}'.format(load))
 
     def _syndic_return(self, load):
         '''
@@ -1778,10 +1779,11 @@ class ClearFuncs(object):
             # If there are groups in the token, check if any of them are listed in the eauth config
             group_auth_match = False
             try:
-                for group in token['groups']:
-                    if group in eauth_groups:
-                        group_auth_match = True
-                        break
+                if token.get('groups'):
+                    for group in token['groups']:
+                        if group in eauth_groups:
+                            group_auth_match = True
+                            break
             except KeyError:
                 pass
             if '*' not in eauth_users and token['name'] not in eauth_users and not group_auth_match:

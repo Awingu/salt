@@ -31,6 +31,7 @@ from salt.ext.six.moves.urllib.parse import urlparse
 
 # Import salt libs
 import salt.utils
+import salt.utils.dictupdate
 import salt.utils.network
 import salt.syspaths
 import salt.utils.validate.path
@@ -368,6 +369,9 @@ VALID_OPTS = {
     # Tells the minion to choose a bounded, random interval to have zeromq attempt to reconnect
     # in the event of a disconnect event
     'recon_randomize': float,  # FIXME This should really be a bool, according to the implementation
+
+    'return_retry_timer': int,
+    'return_retry_random': bool,
 
     # Specify a returner in which all events will be sent to. Requires that the returner in question
     # have an event_return(event) function!
@@ -881,6 +885,8 @@ DEFAULT_MINION_OPTS = {
     'recon_max': 10000,
     'recon_default': 1000,
     'recon_randomize': True,
+    'return_retry_timer': 4,
+    'return_retry_random': True,
     'syndic_log_file': os.path.join(salt.syspaths.LOGS_DIR, 'syndic'),
     'syndic_pidfile': os.path.join(salt.syspaths.PIDFILE_DIR, 'salt-syndic.pid'),
     'random_reauth_delay': 10,
@@ -1215,10 +1221,12 @@ DEFAULT_API_OPTS = {
 
 DEFAULT_SPM_OPTS = {
     # ----- Salt master settings overridden by SPM --------------------->
+    'conf_file': os.path.join(salt.syspaths.CONFIG_DIR, 'spm'),
     'formula_path': '/srv/spm/salt',
     'pillar_path': '/srv/spm/pillar',
     'reactor_path': '/srv/spm/reactor',
     'spm_logfile': '/var/log/salt/spm',
+    'default_include': 'spm.d/*.conf',
     # spm_repos_config also includes a .d/ directory
     'spm_repos_config': '/etc/salt/spm.repos',
     'spm_cache_dir': os.path.join(salt.syspaths.CACHE_DIR, 'spm'),
@@ -1478,7 +1486,7 @@ def include_config(include, orig_path, verbose):
 
         for fn_ in sorted(glob.glob(path)):
             log.debug('Including configuration from {0!r}'.format(fn_))
-            configuration.update(_read_conf_file(fn_))
+            salt.utils.dictupdate.update(configuration, _read_conf_file(fn_))
     return configuration
 
 
@@ -2986,4 +2994,43 @@ def spm_config(path):
     # Let's override them with spm's required defaults
     defaults.update(DEFAULT_SPM_OPTS)
 
+    overrides = load_config(path, 'SPM_CONFIG', DEFAULT_SPM_OPTS['conf_file'])
+    default_include = overrides.get('default_include',
+                                    defaults['default_include'])
+    include = overrides.get('include', [])
+
+    overrides.update(include_config(default_include, path, verbose=False))
+    overrides.update(include_config(include, path, verbose=True))
+    defaults = apply_master_config(overrides, defaults)
+    defaults = apply_spm_config(overrides, defaults)
     return client_config(path, env_var='SPM_CONFIG', defaults=defaults)
+
+
+def apply_spm_config(overrides, defaults):
+    '''
+    Returns the spm configurations dict.
+
+    .. versionadded:: 2015.8.1
+
+    '''
+    opts = defaults.copy()
+    if overrides:
+        opts.update(overrides)
+
+    # Prepend root_dir to other paths
+    prepend_root_dirs = [
+        'formula_path', 'pillar_path', 'reactor_path',
+        'spm_cache_dir', 'spm_build_dir'
+    ]
+
+    # These can be set to syslog, so, not actual paths on the system
+    for config_key in ('spm_logfile',):
+        log_setting = opts.get(config_key, '')
+        if log_setting is None:
+            continue
+
+        if urlparse(log_setting).scheme == '':
+            prepend_root_dirs.append(config_key)
+
+    prepend_root_dir(opts, prepend_root_dirs)
+    return opts

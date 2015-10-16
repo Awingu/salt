@@ -118,24 +118,23 @@ The token may be sent in one of two ways:
 
   For example, using curl:
 
-  .. code-block:: bash
+    .. code-block:: bash
 
-      curl -sSk https://localhost:8000/login \
-            -H 'Accept: application/x-yaml' \
-            -d username=saltdev \
-            -d password=saltdev \
+        curl -sSk https://localhost:8000/login \\
+            -H 'Accept: application/x-yaml' \\
+            -d username=saltdev \\
+            -d password=saltdev \\
             -d eauth=auto
 
-  Copy the ``token`` value from the output and include it in subsequent
-  requests:
+Copy the ``token`` value from the output and include it in subsequent requests:
 
-  .. code-block:: bash
+    .. code-block:: bash
 
-      curl -sSk https://localhost:8000 \
-            -H 'Accept: application/x-yaml' \
-            -H 'X-Auth-Token: 697adbdc8fe971d09ae4c2a3add7248859c87079'\
-            -d client=local \
-            -d tgt='*' \
+        curl -sSk https://localhost:8000 \\
+            -H 'Accept: application/x-yaml' \\
+            -H 'X-Auth-Token: 697adbdc8fe971d09ae4c2a3add7248859c87079'\\
+            -d client=local \\
+            -d tgt='*' \\
             -d fun=test.ping
 
 * Sent via a cookie. This option is a convenience for HTTP clients that
@@ -146,19 +145,19 @@ The token may be sent in one of two ways:
   .. code-block:: bash
 
       # Write the cookie file:
-      curl -sSk https://localhost:8000/login \
-            -c ~/cookies.txt \
-            -H 'Accept: application/x-yaml' \
-            -d username=saltdev \
-            -d password=saltdev \
+      curl -sSk https://localhost:8000/login \\
+            -c ~/cookies.txt \\
+            -H 'Accept: application/x-yaml' \\
+            -d username=saltdev \\
+            -d password=saltdev \\
             -d eauth=auto
 
       # Read the cookie file:
-      curl -sSk https://localhost:8000 \
-            -b ~/cookies.txt \
-            -H 'Accept: application/x-yaml' \
-            -d client=local \
-            -d tgt='*' \
+      curl -sSk https://localhost:8000 \\
+            -b ~/cookies.txt \\
+            -H 'Accept: application/x-yaml' \\
+            -d client=local \\
+            -d tgt='*' \\
             -d fun=test.ping
 
 .. seealso:: You can bypass the session handling via the :py:class:`Run` URL.
@@ -1143,25 +1142,18 @@ class Jobs(LowDataAdapter):
                 - 2
                 - 6.9141387939453125e-06
         '''
-        timeout = int(timeout) if timeout.isdigit() else None
+        lowstate = [{
+            'client': 'runner',
+            'fun': 'jobs.lookup_jid' if jid else 'jobs.list_jobs',
+            'jid': jid,
+        }]
+
         if jid:
-            lowstate = [{
-                'client': 'runner',
-                'fun': 'jobs.lookup_jid',
-                'args': (jid,),
-                'timeout': timeout,
-            }, {
+            lowstate.append({
                 'client': 'runner',
                 'fun': 'jobs.list_job',
-                'args': (jid,),
-                'timeout': timeout,
-            }]
-        else:
-            lowstate = [{
-                'client': 'runner',
-                'fun': 'jobs.list_jobs',
-                'timeout': timeout,
-            }]
+                'jid': jid,
+            })
 
         cherrypy.request.lowstate = lowstate
         job_ret_info = list(self.exec_lowstate(
@@ -1916,21 +1908,21 @@ class WebsocketEndpoint(object):
 
         .. http:get:: /ws/(token)
 
-            :query format_events: The event stream will undergo server-side
-                formatting if the ``format_events`` URL parameter is included
-                in the request. This can be useful to avoid formatting on the
-                client-side:
+        :query format_events: The event stream will undergo server-side
+            formatting if the ``format_events`` URL parameter is included
+            in the request. This can be useful to avoid formatting on the
+            client-side:
 
-                .. code-block:: bash
+            .. code-block:: bash
 
-                    curl -NsS <...snip...> localhost:8000/ws?format_events
+                curl -NsS <...snip...> localhost:8000/ws?format_events
 
-            :reqheader X-Auth-Token: an authentication token from
-                :py:class:`~Login`.
+        :reqheader X-Auth-Token: an authentication token from
+            :py:class:`~Login`.
 
-            :status 101: switching to the websockets protocol
-            :status 401: |401|
-            :status 406: |406|
+        :status 101: switching to the websockets protocol
+        :status 401: |401|
+        :status 406: |406|
 
         **Example request:**
 

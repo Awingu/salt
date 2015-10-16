@@ -36,6 +36,7 @@ import shlex
 from salt.exceptions import CommandExecutionError, SaltRenderError
 import salt.utils
 import salt.syspaths
+from salt.exceptions import MinionError
 
 log = logging.getLogger(__name__)
 
@@ -489,10 +490,14 @@ def install(name=None, refresh=False, pkgs=None, saltenv='base', **kwargs):
 
         If the package is installed by ``pkg.install``:
 
+        .. code-block:: cfg
+
             {'<package>': {'old': '<old-version>',
                            'new': '<new-version>'}}
 
         If the package is already installed:
+
+        .. code-block:: cfg
 
             {'<package>': {'current': '<current-version>'}}
 
@@ -612,7 +617,10 @@ def install(name=None, refresh=False, pkgs=None, saltenv='base', **kwargs):
             if installer.startswith('salt:'):
                 if __salt__['cp.hash_file'](installer, saltenv) != \
                         __salt__['cp.hash_file'](cached_pkg):
-                    cached_pkg = __salt__['cp.cache_file'](installer, saltenv)
+                    try:
+                        cached_pkg = __salt__['cp.cache_file'](installer, saltenv)
+                    except MinionError as exc:
+                        return '{0}: {1}'.format(exc, installer)
 
                     # Check if the installer was cached successfully
                     if not cached_pkg:

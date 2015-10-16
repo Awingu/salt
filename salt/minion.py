@@ -16,7 +16,8 @@ import logging
 import threading
 import traceback
 import multiprocessing
-from random import shuffle
+from random import randint, shuffle
+from salt.config import DEFAULT_MINION_OPTS
 from stat import S_IMODE
 
 # Import Salt Libs
@@ -261,7 +262,7 @@ def parse_args_and_kwargs(func, args, data=None):
     return load_args_and_kwargs(func, args, data=data)
 
 
-def load_args_and_kwargs(func, args, data=None):
+def load_args_and_kwargs(func, args, data=None, ignore_invalid=False):
     '''
     Detect the args and kwargs that need to be passed to a function call, and
     check them against what was passed.
@@ -315,7 +316,7 @@ def load_args_and_kwargs(func, args, data=None):
         else:
             _args.append(arg)
 
-    if invalid_kwargs:
+    if invalid_kwargs and not ignore_invalid:
         salt.utils.invalid_kwargs(invalid_kwargs)
 
     if argspec.keywords and isinstance(data, dict):
@@ -791,6 +792,30 @@ class Minion(MinionBase):
 
         self.grains_cache = self.opts['grains']
 
+    def _return_retry_timer(self):
+        '''
+        Based on the minion configuration, either return a randomized timer or
+        just return the value of the return_retry_timer.
+        '''
+        msg = 'Minion return retry timer set to {0} seconds'
+        if self.opts.get('return_retry_random'):
+            try:
+                random_retry = randint(1, self.opts['return_retry_timer'])
+            except ValueError:
+                # Catch wiseguys using negative integers here
+                log.error(
+                    'Invalid value ({0}) for return_retry_timer, must be a '
+                    'positive integer'.format(self.opts['return_retry_timer'])
+                )
+                log.debug(msg.format(DEFAULT_MINION_OPTS['return_retry_timer']))
+                return DEFAULT_MINION_OPTS['return_retry_timer']
+            else:
+                log.debug(msg.format(random_retry) + ' (randomized)')
+                return random_retry
+        else:
+            log.debug(msg.format(self.opts.get('return_retry_timer')))
+            return self.opts.get('return_retry_timer')
+
     def _prep_mod_opts(self):
         '''
         Returns a copy of the opts with key bits stripped out
@@ -954,6 +979,13 @@ class Minion(MinionBase):
         '''
         # this seems awkward at first, but it's a workaround for Windows
         # multiprocessing communication.
+        if sys.platform.startswith('win') and \
+                opts['multiprocessing'] and \
+                not salt.log.is_logging_configured():
+            # We have to re-init the logging system for Windows
+            salt.log.setup_console_logger(log_level=opts.get('log_level', 'info'))
+            if opts.get('log_file'):
+                salt.log.setup_logfile_logger(opts['log_file'], opts.get('log_level_logfile', 'info'))
         if not minion_instance:
             minion_instance = cls(opts)
             if not hasattr(minion_instance, 'functions'):
@@ -1083,7 +1115,10 @@ class Minion(MinionBase):
                 ret['metadata'] = data['metadata']
             else:
                 log.warning('The metadata parameter must be a dictionary.  Ignoring.')
-        minion_instance._return_pub(ret)
+        minion_instance._return_pub(
+            ret,
+            timeout=minion_instance._return_retry_timer()
+        )
         if data['ret']:
             if 'ret_config' in data:
                 ret['ret_config'] = data['ret_config']
@@ -1140,7 +1175,10 @@ class Minion(MinionBase):
             ret['fun_args'] = data['arg']
         if 'metadata' in data:
             ret['metadata'] = data['metadata']
-        minion_instance._return_pub(ret)
+        minion_instance._return_pub(
+            ret,
+            timeout=minion_instance._return_retry_timer()
+        )
         if data['ret']:
             if 'ret_config' in data:
                 ret['ret_config'] = data['ret_config']
@@ -1896,7 +1934,9 @@ class Syndic(Minion):
                               pretag=tagify(self.opts['id'], base='syndic'),
                               )
         for jid in self.jids:
-            self._return_pub(self.jids[jid], '_syndic_return')
+            self._return_pub(self.jids[jid],
+                             '_syndic_return',
+                             timeout=self._return_retry_timer())
         self._reset_event_aggregation()
 
     def destroy(self):
@@ -2475,9 +2515,18 @@ class ProxyMinion(Minion):
 
         self.opts['proxymodule'] = salt.loader.proxy(self.opts, None, loaded_base_name=fq_proxyname)
         self.functions, self.returners, self.function_errors = self._load_modules()
-        proxy_fn = self.opts['proxymodule'].loaded_base_name + '.init'
-        self.opts['proxymodule'][proxy_fn](self.opts)
 
+        if ('{0}.init'.format(fq_proxyname) not in self.opts['proxymodule']
+            or '{0}.shutdown'.format(fq_proxyname) not in self.opts['proxymodule']):
+            log.error('Proxymodule {0} is missing an init() or a shutdown() or both.'.format(fq_proxyname))
+            log.error('Check your proxymodule.  Salt-proxy aborted.')
+            self._running = False
+            raise SaltSystemExit(code=-1)
+
+        proxy_fn = self.opts['proxymodule'].loaded_base_name + '.init'
+
+        self.opts['proxymodule'][proxy_fn](self.opts)
+        # reload ?!?
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self._prep_mod_opts()
         self.matcher = Matcher(self.opts, self.functions)

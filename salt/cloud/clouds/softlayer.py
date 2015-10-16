@@ -275,16 +275,43 @@ def create(vm_):
         'domain': vm_['domain'],
         'startCpus': vm_['cpu_number'],
         'maxMemory': vm_['ram'],
-        'localDiskFlag': vm_['local_disk'],
         'hourlyBillingFlag': vm_['hourly_billing'],
     }
 
+    local_disk_flag = config.get_cloud_config_value(
+        'local_disk', vm_, __opts__, default=False
+    )
+    kwargs['localDiskFlag'] = local_disk_flag
+
     if 'image' in vm_:
         kwargs['operatingSystemReferenceCode'] = vm_['image']
-        kwargs['blockDevices'] = [{
-            'device': '0',
-            'diskImage': {'capacity': vm_['disk_size']},
-        }]
+        kwargs['blockDevices'] = []
+        disks = vm_['disk_size']
+
+        if isinstance(disks, int):
+            disks = [str(disks)]
+        elif isinstance(disks, str):
+            disks = [size.strip() for size in disks.split(',')]
+
+        count = 0
+        for disk in disks:
+            # device number '1' is reserved for the SWAP disk
+            if count == 1:
+                count += 1
+            block_device = {'device': str(count),
+                            'diskImage': {'capacity': str(disk)}}
+            kwargs['blockDevices'].append(block_device)
+            count += 1
+
+            # Upper bound must be 5 as we're skipping '1' for the SWAP disk ID
+            if count > 5:
+                log.warning('More that 5 disks were specified for {0} .'
+                            'The first 5 disks will be applied to the VM, '
+                            'but the remaining disks will be ignored.\n'
+                            'Please adjust your cloud configuration to only '
+                            'specify a maximum of 5 disks.'.format(vm_['name']))
+                break
+
     elif 'global_identifier' in vm_:
         kwargs['blockDeviceTemplateGroup'] = {
             'globalIdentifier': vm_['global_identifier']
@@ -327,6 +354,12 @@ def create(vm_):
         kwargs['networkComponents'] = [{
             'maxSpeed': int(max_net_speed)
         }]
+
+    post_uri = config.get_cloud_config_value(
+        'post_uri', vm_, __opts__, default=None
+    )
+    if post_uri:
+        kwargs['postInstallScriptUri'] = post_uri
 
     salt.utils.cloud.fire_event(
         'event',
@@ -414,9 +447,10 @@ def create(vm_):
         '''
         node_info = pass_conn.getVirtualGuests(id=response['id'], mask=mask)
         for node in node_info:
-            if node['id'] == response['id']:
-                if 'passwords' in node['operatingSystem'] and len(node['operatingSystem']['passwords']) > 0:
-                    return node['operatingSystem']['passwords'][0]['username'], node['operatingSystem']['passwords'][0]['password']
+            if node['id'] == response['id'] and \
+                            'passwords' in node['operatingSystem'] and \
+                            len(node['operatingSystem']['passwords']) > 0:
+                return node['operatingSystem']['passwords'][0]['username'], node['operatingSystem']['passwords'][0]['password']
         time.sleep(5)
         return False
 
@@ -464,7 +498,7 @@ def list_nodes_full(mask='mask[id]', call=None):
         )
 
     ret = {}
-    conn = get_conn(service='Account')
+    conn = get_conn(service='SoftLayer_Account')
     response = conn.getVirtualGuests()
     for node_id in response:
         ret[node_id['hostname']] = node_id
@@ -577,5 +611,5 @@ def list_vlans(call=None):
             'The list_vlans function must be called with -f or --function.'
         )
 
-    conn = get_conn(service='Account')
+    conn = get_conn(service='SoftLayer_Account')
     return conn.getNetworkVlans()

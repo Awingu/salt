@@ -17,30 +17,12 @@ limitations under the License.
 Google Compute Engine Module
 ============================
 
-The Google Compute Engine module.  This module interfaces with Google Compute
-Engine.  To authenticate to GCE, you will need to create a Service Account.
+The Google Compute Engine module. This module interfaces with Google Compute
+Engine (GCE). To authenticate to GCE, you will need to create a Service Account.
+To set up Service Account Authentication, follow the :ref:`gce_setup` instructions.
 
-Setting up Service Account Authentication:
-  - Go to the Cloud Console at: https://cloud.google.com/console.
-  - Create or navigate to your desired Project.
-  - Make sure Google Compute Engine service is enabled under the Services
-    section.
-  - Go to "APIs and auth" section, and then the "Credentials" link.
-  - Click the "CREATE NEW CLIENT ID" button.
-  - Select "Service Account" and click "Create Client ID" button.
-  - This will automatically download a .json file; ignore it.
-  - Look for a new "Service Account" section in the page, click on the "Generate New P12 key" button
-  - Copy the Email Address for inclusion in your /etc/salt/cloud file
-    in the 'service_account_email_address' setting.
-  - Download the Private Key
-  - The key that you download is a PKCS12 key.  It needs to be converted to
-    the PEM format.
-  - Convert the key using OpenSSL (the default password is 'notasecret'):
-    C{openssl pkcs12 -in PRIVKEY.p12 -passin pass:notasecret \
-    -nodes -nocerts | openssl rsa -out ~/PRIVKEY.pem}
-  - Add the full path name of the converted private key to your
-    /etc/salt/cloud file as 'service_account_private_key' setting.
-  - Consider using a more secure location for your private key.
+Example Provider Configuration
+------------------------------
 
 .. code-block:: yaml
 
@@ -60,7 +42,6 @@ Setting up Service Account Authentication:
 
 :maintainer: Eric Johnson <erjohnso@google.com>
 :depends: libcloud >= 0.14.1
-:depends: pycrypto >= 2.1
 '''
 # pylint: disable=invalid-name,function-redefined
 
@@ -119,7 +100,7 @@ list_nodes = namespaced_function(list_nodes, globals())
 list_nodes_full = namespaced_function(list_nodes_full, globals())
 list_nodes_select = namespaced_function(list_nodes_select, globals())
 
-GCE_VM_NAME_REGEX = re.compile(r'(?:[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?)')
+GCE_VM_NAME_REGEX = re.compile(r'^(?:[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?)$')
 
 
 # Only load in this module if the GCE configurations are in place
@@ -1580,32 +1561,36 @@ def create_disk(kwargs=None, call=None):
             'The create_disk function must be called with -f or --function.'
         )
 
-    if not kwargs or 'location' not in kwargs:
+    if kwargs is None:
+        kwargs = {}
+
+    name = kwargs.get('disk_name', None)
+    image = kwargs.get('image', None)
+    location = kwargs.get('location', None)
+    size = kwargs.get('size', None)
+    snapshot = kwargs.get('snapshot', None)
+
+    if location is None:
         log.error(
             'A location (zone) must be specified when creating a disk.'
         )
         return False
 
-    if 'disk_name' not in kwargs:
+    if name is None:
         log.error(
             'A disk_name must be specified when creating a disk.'
         )
         return False
 
-    if 'size' not in kwargs:
-        if 'image' not in kwargs and 'snapshot' not in kwargs:
-            log.error(
-                'Must specify image, snapshot, or size.'
-            )
-            return False
+    if 'size' is None and 'image' is None and 'snapshot' is None:
+        log.error(
+            'Must specify image, snapshot, or size.'
+        )
+        return False
 
     conn = get_conn()
 
-    size = kwargs.get('size', None)
-    name = kwargs.get('disk_name')
     location = conn.ex_get_zone(kwargs['location'])
-    snapshot = kwargs.get('snapshot', None)
-    image = kwargs.get('image', None)
     use_existing = True
 
     salt.utils.cloud.fire_event(
@@ -1960,9 +1945,9 @@ def destroy(vm_name, call=None):
                 profile = md['value']
     vm_ = get_configured_provider()
     delete_boot_pd = False
-    if profile is not None and profile in vm_['profiles']:
-        if 'delete_boot_pd' in vm_['profiles'][profile]:
-            delete_boot_pd = vm_['profiles'][profile]['delete_boot_pd']
+
+    if profile and profile in vm_['profiles'] and 'delete_boot_pd' in vm_['profiles'][profile]:
+        delete_boot_pd = vm_['profiles'][profile]['delete_boot_pd']
 
     try:
         inst_deleted = conn.destroy_node(node)
@@ -2037,9 +2022,8 @@ def create(vm_=None, call=None):
 
     if not GCE_VM_NAME_REGEX.match(vm_['name']):
         raise SaltCloudSystemExit(
-            'The allowed VM names must match the following regular expression: {0}'.format(
-                GCE_VM_NAME_REGEX.pattern
-            )
+            'VM names must start with a letter, only contain letters, numbers, or dashes '
+            'and cannot end in a dash.'
         )
 
     try:
@@ -2073,8 +2057,6 @@ def create(vm_=None, call=None):
 
     if LIBCLOUD_VERSION_INFO > (0, 15, 1):
 
-        # This only exists in current trunk of libcloud and should be in next
-        # release
         kwargs.update({
             'ex_disk_type': config.get_cloud_config_value(
                 'ex_disk_type', vm_, __opts__, default='pd-standard'),
@@ -2083,7 +2065,10 @@ def create(vm_=None, call=None):
             'ex_disks_gce_struct': config.get_cloud_config_value(
                 'ex_disks_gce_struct', vm_, __opts__, default=None),
             'ex_service_accounts': config.get_cloud_config_value(
-                'ex_service_accounts', vm_, __opts__, default=None)
+                'ex_service_accounts', vm_, __opts__, default=None),
+            'ex_can_ip_forward': config.get_cloud_config_value(
+                'ip_forwarding', vm_, __opts__, default=False
+            )
         })
         if kwargs.get('ex_disk_type') not in ('pd-standard', 'pd-ssd'):
             raise SaltCloudSystemExit(
