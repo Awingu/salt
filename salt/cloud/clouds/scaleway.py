@@ -13,6 +13,7 @@ the cloud configuration at ``/etc/salt/cloud.providers`` or
 ``/etc/salt/cloud.providers.d/scaleway.conf``:
 
 .. code-block:: yaml
+
     scaleway-config:
       # Scaleway organization and token
       access_key: 0e604a2c-aea6-4081-acb2-e1d1258ef95c
@@ -22,18 +23,16 @@ the cloud configuration at ``/etc/salt/cloud.providers`` or
 :depends: requests
 '''
 
+# Import Python Libs
 from __future__ import absolute_import
-
 import json
 import logging
 import pprint
 import time
 
-try:
-    import requests
-except ImportError:
-    requests = None
-
+# Import Salt Libs
+from salt.ext.six.moves import range
+import salt.utils.cloud
 import salt.config as config
 from salt.exceptions import (
     SaltCloudNotFound,
@@ -41,24 +40,31 @@ from salt.exceptions import (
     SaltCloudExecutionFailure,
     SaltCloudExecutionTimeout
 )
-from salt.ext.six.moves import range
-import salt.utils.cloud
 
+# Import Third Party Libs
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 log = logging.getLogger(__name__)
+
+__virtualname__ = 'scaleway'
 
 
 # Only load in this module if the Scaleway configurations are in place
 def __virtual__():
-    ''' Check for Scaleway configurations.
     '''
-    if requests is None:
-        return False
-
+    Check for Scaleway configurations.
+    '''
     if get_configured_provider() is False:
         return False
 
-    return True
+    if get_dependencies() is False:
+        return False
+
+    return __virtualname__
 
 
 def get_configured_provider():
@@ -66,8 +72,18 @@ def get_configured_provider():
     '''
     return config.is_provider_configured(
         __opts__,
-        __active_provider_name__ or 'scaleway',
+        __active_provider_name__ or __virtualname__,
         ('token',)
+    )
+
+
+def get_dependencies():
+    '''
+    Warn if dependencies aren't met.
+    '''
+    return config.check_driver_dependencies(
+        __virtualname__,
+        {'requests': HAS_REQUESTS}
     )
 
 
@@ -136,7 +152,7 @@ def list_nodes_full(call=None):
 
     items = query(method='servers')
 
-    # For each server, iterate on its paramters.
+    # For each server, iterate on its parameters.
     ret = {}
     for node in items['servers']:
         ret[node['name']] = {}
@@ -166,7 +182,7 @@ def get_image(server_):
         if server_image in (images[image]['name'], images[image]['id']):
             return images[image]['id']
     raise SaltCloudNotFound(
-        'The specified image, {0!r}, could not be found.'.format(server_image)
+        'The specified image, \'{0}\', could not be found.'.format(server_image)
     )
 
 
@@ -191,9 +207,10 @@ def create(server_):
     '''
     try:
         # Check for required profile parameters before sending any API calls.
-        if config.is_profile_configured(__opts__,
-                                        __active_provider_name__ or 'scaleway',
-                                        server_['profile']) is False:
+        if server_['profile'] and config.is_profile_configured(__opts__,
+                                                               __active_provider_name__ or 'scaleway',
+                                                               server_['profile'],
+                                                               vm_=server_) is False:
             return False
     except AttributeError:
         pass
@@ -221,10 +238,15 @@ def create(server_):
         'access_key', get_configured_provider(), __opts__, search_global=False
     )
 
+    commercial_type = config.get_cloud_config_value(
+        'commercial_type', server_, __opts__, default='C1'
+    )
+
     kwargs = {
         'name': server_['name'],
         'organization': access_key,
         'image': get_image(server_),
+        'commercial_type': commercial_type,
     }
 
     salt.utils.cloud.fire_event(
@@ -284,9 +306,9 @@ def create(server_):
 
     ret.update(data)
 
-    log.info('Created BareMetal server {0[name]!r}'.format(server_))
+    log.info('Created BareMetal server \'{0[name]}\''.format(server_))
     log.debug(
-        '{0[name]!r} BareMetal server creation details:\n{1}'.format(
+        '\'{0[name]}\' BareMetal server creation details:\n{1}'.format(
             server_, pprint.pformat(data)
         )
     )
@@ -315,7 +337,7 @@ def query(method='servers', server_id=None, command=None, args=None,
         get_configured_provider(),
         __opts__,
         search_global=False,
-        default='https://api.scaleway.com'
+        default='https://api.cloud.online.net'
     ))
 
     path = '{0}/{1}/'.format(base_path, method)
@@ -343,8 +365,8 @@ def query(method='servers', server_id=None, command=None, args=None,
     if request.status_code > 299:
         raise SaltCloudSystemExit(
             'An error occurred while querying Scaleway. HTTP Code: {0}  '
-            'Error: {1!r}'.format(
-                request.getcode(),
+            'Error: \'{1}\''.format(
+                request.status_code,
                 request.text
             )
         )
@@ -389,8 +411,8 @@ def _get_node(name):
             return list_nodes_full()[name]
         except KeyError:
             log.debug(
-                'Failed to get the data for the node {0!r}. Remaining '
-                'attempts {1}'.format(
+                'Failed to get the data for node \'{0}\'. Remaining '
+                'attempts: {1}'.format(
                     name, attempt
                 )
             )
@@ -404,6 +426,7 @@ def destroy(name, call=None):
 
     CLI Example:
     .. code-block:: bash
+
         salt-cloud --destroy mymachine
     '''
     if call == 'function':

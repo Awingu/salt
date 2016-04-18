@@ -6,30 +6,30 @@ Module for handling openstack glance calls.
 :configuration: This module is not usable until the following are specified
     either in a pillar or in the minion's config file::
 
-        glance.user: admin
-        glance.password: verybadpass
-        glance.tenant: admin
-        glance.insecure: False   #(optional)
-        glance.auth_url: 'http://127.0.0.1:5000/v2.0/'
+        keystone.user: admin
+        keystone.password: verybadpass
+        keystone.tenant: admin
+        keystone.insecure: False   #(optional)
+        keystone.auth_url: 'http://127.0.0.1:5000/v2.0/'
 
     If configuration for multiple openstack accounts is required, they can be
     set up as different configuration profiles:
     For example::
 
         openstack1:
-          glance.user: admin
-          glance.password: verybadpass
-          glance.tenant: admin
-          glance.auth_url: 'http://127.0.0.1:5000/v2.0/'
+          keystone.user: admin
+          keystone.password: verybadpass
+          keystone.tenant: admin
+          keystone.auth_url: 'http://127.0.0.1:5000/v2.0/'
 
         openstack2:
-          glance.user: admin
-          glance.password: verybadpass
-          glance.tenant: admin
-          glance.auth_url: 'http://127.0.0.2:5000/v2.0/'
+          keystone.user: admin
+          keystone.password: verybadpass
+          keystone.tenant: admin
+          keystone.auth_url: 'http://127.0.0.2:5000/v2.0/'
 
-    With this configuration in place, any of the keystone functions can make use
-    of a configuration profile by declaring it explicitly.
+    With this configuration in place, any of the glance functions can
+    make use of a configuration profile by declaring it explicitly.
     For example::
 
         salt '*' glance.image_list profile=openstack1
@@ -37,6 +37,7 @@ Module for handling openstack glance calls.
 
 # Import Python libs
 from __future__ import absolute_import
+import re
 
 # Import third party libs
 #import salt.ext.six as six
@@ -54,7 +55,8 @@ from salt.version import (
     )
 # is there not SaltStackVersion.current() to get
 # the version of the salt running this code??
-CUR_VER = SaltStackVersion(__version__[0], __version__[1])
+_version_ary = __version__.split('.')
+CUR_VER = SaltStackVersion(_version_ary[0], _version_ary[1])
 BORON = SaltStackVersion.from_name('Boron')
 
 # pylint: disable=import-error
@@ -67,10 +69,11 @@ except ImportError:
     pass
 
 # Workaround, as the Glance API v2 requires you to
-# already have a keystone token
+# already have a keystone session token
 HAS_KEYSTONE = False
 try:
     from keystoneclient.v2_0 import client as kstone
+    #import keystoneclient.apiclient.exceptions as kstone_exc
     HAS_KEYSTONE = True
 except ImportError:
     pass
@@ -88,7 +91,7 @@ def __virtual__():
     '''
     if HAS_GLANCE:
         return 'glance'
-    return False
+    return (False, 'The glance execution module cannot be loaded: the glanceclient python library is not available.')
 
 
 __opts__ = {}
@@ -104,61 +107,60 @@ def _auth(profile=None, api_version=2, **connection_args):
     '''
 
     if profile:
-        prefix = profile + ":glance."
+        prefix = profile + ":keystone."
     else:
-        prefix = "glance."
+        prefix = "keystone."
 
-    # look in connection_args first, then default to config file
     def get(key, default=None):
         '''
-        TODO: Add docstring.
+        Checks connection_args, then salt-minion config,
+        falls back to specified default value.
         '''
         return connection_args.get('connection_' + key,
             __salt__['config.get'](prefix + key, default))
 
     user = get('user', 'admin')
-    password = get('password', 'ADMIN')
+    password = get('password', None)
     tenant = get('tenant', 'admin')
     tenant_id = get('tenant_id')
-    auth_url = get('auth_url', 'http://127.0.0.1:35357/v2.0/')
+    auth_url = get('auth_url', 'http://127.0.0.1:35357/v2.0')
     insecure = get('insecure', False)
-    token = get('token')
+    admin_token = get('token')
     region = get('region')
-    endpoint = get('endpoint', 'http://127.0.0.1:9292/')
+    ks_endpoint = get('endpoint', 'http://127.0.0.1:9292/')
+    g_endpoint_url = __salt__['keystone.endpoint_get']('glance', profile)
+    # The trailing 'v2' causes URLs like thise one:
+    # http://127.0.0.1:9292/v2/v1/images
+    g_endpoint_url = re.sub('/v2', '', g_endpoint_url['internalurl'])
 
-    if token:
-        kwargs = {'token': token,
-                  'username': user,
-                  'endpoint_url': endpoint,
-                  'auth_url': auth_url,
-                  'region_name': region,
-                  'tenant_name': tenant}
-    else:
+    if admin_token and api_version != 1 and not password:
+        # If we had a password we could just
+        # ignore the admin-token and move on...
+        raise SaltInvocationError('Only can use keystone admin token ' +
+            'with Glance API v1')
+    elif password:
+        # Can't use the admin-token anyway
         kwargs = {'username': user,
                   'password': password,
                   'tenant_id': tenant_id,
                   'auth_url': auth_url,
+                  'endpoint_url': g_endpoint_url,
                   'region_name': region,
                   'tenant_name': tenant}
         # 'insecure' keyword not supported by all v2.0 keystone clients
         #   this ensures it's only passed in when defined
         if insecure:
             kwargs['insecure'] = True
-
-    if token:
-        log.debug('Calling glanceclient.client.Client(' +
-            '{0}, {1}, **{2})'.format(api_version, endpoint, kwargs))
-        try:
-            return client.Client(api_version, endpoint, **kwargs)
-        except exc.HTTPUnauthorized:
-            kwargs.pop('token')
-            kwargs['password'] = password
-            log.warn('Supplied token is invalid, trying to ' +
-                'get a new one using username and password.')
+    elif api_version == 1 and admin_token:
+        kwargs = {'token': admin_token,
+                  'auth_url': auth_url,
+                  'endpoint_url': g_endpoint_url}
+    else:
+        raise SaltInvocationError('No credentials to authenticate with.')
 
     if HAS_KEYSTONE:
         log.debug('Calling keystoneclient.v2_0.client.Client(' +
-            '{0}, **{1})'.format(endpoint, kwargs))
+            '{0}, **{1})'.format(ks_endpoint, kwargs))
         keystone = kstone.Client(**kwargs)
         log.debug(help(keystone.get_token))
         kwargs['token'] = keystone.get_token(keystone.session)
@@ -167,8 +169,11 @@ def _auth(profile=None, api_version=2, **connection_args):
         # logging it anyway when in debug-mode
         kwargs.pop('password')
         log.debug('Calling glanceclient.client.Client(' +
-            '{0}, {1}, **{2})'.format(api_version, endpoint, kwargs))
-        return client.Client(api_version, endpoint, **kwargs)
+            '{0}, {1}, **{2})'.format(api_version,
+                g_endpoint_url, kwargs))
+        # may raise exc.HTTPUnauthorized, exc.HTTPNotFound
+        # but we deal with those elsewhere
+        return client.Client(api_version, g_endpoint_url, **kwargs)
     else:
         raise NotImplementedError(
             "Can't retrieve a auth_token without keystone")
@@ -217,12 +222,15 @@ def image_create(name, location=None, profile=None, visibility=None,
     CLI Example, old format:
 
     .. code-block:: bash
+
         salt '*' glance.image_create name=f16-jeos is_public=true \\
                  disk_format=qcow2 container_format=ovf \\
                  copy_from=http://berrange.fedorapeople.org/\
                     images/2012-02-29/f16-x86_64-openstack-sda.qcow2
 
     CLI Example, new format resembling Glance API v2:
+
+    .. code-block:: bash
 
         salt '*' glance.image_create name=f16-jeos visibility=public \\
                  disk_format=qcow2 container_format=ovf \\
@@ -286,7 +294,7 @@ def image_create(name, location=None, profile=None, visibility=None,
     # in a usable fashion. Thus we have to use v1 for now.
     g_client = _auth(profile, api_version=1)
     image = g_client.images.create(name=name, **kwargs)
-    return image_show(image.id)
+    return image_show(image.id, profile=profile)
 
 
 def image_delete(id=None, name=None, profile=None):  # pylint: disable=C0103
@@ -302,25 +310,38 @@ def image_delete(id=None, name=None, profile=None):  # pylint: disable=C0103
         salt '*' glance.image_delete name=f16-jeos
     '''
     g_client = _auth(profile)
+    image = {'id': False, 'name': None}
     if name:
         for image in g_client.images.list():
             if image.name == name:
                 id = image.id  # pylint: disable=C0103
                 continue
     if not id:
-        return {'Error': 'Unable to resolve '
-            'image id for name {0}'.format(name)}
+        return {
+            'result': False,
+            'comment':
+                'Unable to resolve image id '
+                'for name {0}'.format(name)
+            }
+    elif not name:
+        name = image['name']
     try:
         g_client.images.delete(id)
     except exc.HTTPNotFound:
-        return {'Error': 'No image with ID {0}'.format(id)}
+        return {
+            'result': False,
+            'comment': 'No image with ID {0}'.format(id)
+            }
     except exc.HTTPForbidden as forbidden:
         log.error(str(forbidden))
-        return {'Error': str(forbidden)}
-    ret = 'Deleted image with ID {0}'.format(id)
-    if name:
-        ret += ' ({0})'.format(name)
-    return ret
+        return {
+            'result': False,
+            'comment': str(forbidden)
+            }
+    return {
+        'result': True,
+        'comment': 'Deleted image \'{0}\' ({1}).'.format(name, id),
+        }
 
 
 def image_show(id=None, name=None, profile=None):  # pylint: disable=C0103
@@ -341,16 +362,27 @@ def image_show(id=None, name=None, profile=None):  # pylint: disable=C0103
                 id = image.id  # pylint: disable=C0103
                 continue
     if not id:
-        return {'Error': 'Unable to resolve image id'}
-    image = g_client.images.get(id)
+        return {
+            'result': False,
+            'comment':
+                'Unable to resolve image ID '
+                'for name \'{0}\''.format(name)
+            }
+    try:
+        image = g_client.images.get(id)
+    except exc.HTTPNotFound:
+        return {
+            'result': False,
+            'comment': 'No image with ID {0}'.format(id)
+            }
     pformat = pprint.PrettyPrinter(indent=4).pformat
     log.debug('Properties of image {0}:\n{1}'.format(
         image.name, pformat(image)))
     ret_details = {}
     # I may want to use this code on Beryllium
-    # until we got Boron packages for Ubuntu
+    # until we got 2016.3.0 packages for Ubuntu
     # so please keep this code until Carbon!
-    warn_until('Carbon', 'Starting with \'Boron\' image_show() '
+    warn_until('Carbon', 'Starting with \'2016.3.0\' image_show() '
             'will stop wrapping the returned image in another '
             'dictionary.')
     if CUR_VER < BORON:
@@ -376,11 +408,15 @@ def image_list(id=None, profile=None, name=None):  # pylint: disable=C0103
 
         salt '*' glance.image_list
     '''
+    #try:
     g_client = _auth(profile)
+    #except kstone_exc.Unauthorized:
+    #    return False
+    #
     # I may want to use this code on Beryllium
-    # until we got Boron packages for Ubuntu
+    # until we got 2016.3.0 packages for Ubuntu
     # so please keep this code until Carbon!
-    warn_until('Carbon', 'Starting in \'Boron\' image_list() '
+    warn_until('Carbon', 'Starting in \'2016.3.0\' image_list() '
         'will return a list of images instead of a dictionary '
         'keyed with the images\' names.')
     if CUR_VER < BORON:
@@ -397,8 +433,12 @@ def image_list(id=None, profile=None, name=None):  # pylint: disable=C0103
             if name == image.name:
                 if name in ret and CUR_VER < BORON:
                     # Not really worth an exception
-                    return {'Error': 'More than one image '
-                            'with name "{0}"'.format(name)}
+                    return {
+                        'result': False,
+                        'comment':
+                            'More than one image with '
+                            'name "{0}"'.format(name)
+                        }
                 _add_image(ret, image)
     log.debug('Returning images: {0}'.format(ret))
     return ret
@@ -416,25 +456,32 @@ def image_update(id=None, name=None, profile=None, **kwargs):  # pylint: disable
     '''
     Update properties of given image.
     Known to work for:
-      - min_ram (in MB)
-      - protected (bool)
-      - visibility ('public' or 'private')
+    - min_ram (in MB)
+    - protected (bool)
+    - visibility ('public' or 'private')
     '''
     if id:
-        image = image_show(id=id)
-        # TODO: This unwrapping should get a warn_until
-        if len(image) == 1:
+        image = image_show(id=id, profile=profile)
+        if 'result' in image and not image['result']:
+            return image
+        elif len(image) == 1:
             image = image.values()[0]
     elif name:
-        img_list = image_list(name=name)
-        if img_list is not list and 'Error' in img_list:
+        img_list = image_list(name=name, profile=profile)
+        if img_list is dict and 'result' in img_list:
             return img_list
         elif len(img_list) == 0:
-            return {'result': False,
-                'comment': 'No image with name \'{0}\' '
-                    'found.'.format(name)}
+            return {
+                'result': False,
+                'comment':
+                    'No image with name \'{0}\' '
+                    'found.'.format(name)
+                }
         elif len(img_list) == 1:
-            image = img_list[0]
+            try:
+                image = img_list[0]
+            except KeyError:
+                image = img_list[name]
     else:
         raise SaltInvocationError
     log.debug('Found image:\n{0}'.format(image))
@@ -448,9 +495,9 @@ def image_update(id=None, name=None, profile=None, **kwargs):  # pylint: disable
     g_client = _auth(profile)
     updated = g_client.images.update(image['id'], **to_update)
     # I may want to use this code on Beryllium
-    # until we got Boron packages for Ubuntu
+    # until we got 2016.3.0 packages for Ubuntu
     # so please keep this code until Carbon!
-    warn_until('Carbon', 'Starting with \'Boron\' image_update() '
+    warn_until('Carbon', 'Starting with \'2016.3.0\' image_update() '
             'will stop wrapping the returned, updated image in '
             'another dictionary.')
     if CUR_VER < BORON:

@@ -30,6 +30,7 @@ import salt.key
 import salt.fileserver
 import salt.utils.atomicfile
 import salt.utils.event
+import salt.utils.gitfs
 import salt.utils.verify
 import salt.utils.minions
 import salt.utils.gzip_util
@@ -78,7 +79,7 @@ def init_git_pillar(opts):
                     )
                 else:
                     ret.append(
-                        git_pillar.LegacyGitPillar(
+                        git_pillar._LegacyGitPillar(
                             br,
                             loc,
                             opts
@@ -89,7 +90,7 @@ def init_git_pillar(opts):
                 pillar = salt.utils.gitfs.GitPillar(opts)
                 pillar.init_remotes(
                     opts_dict['git'],
-                    git_pillar.PER_REMOTE_PARAMS
+                    git_pillar.PER_REMOTE_OVERRIDES
                 )
                 ret.append(pillar)
     return ret
@@ -135,6 +136,36 @@ def clean_fsbackend(opts):
                         'Unable to file_lists cache file {0}: {1}'
                         .format(cache_file, exc)
                     )
+
+
+def clear_fsbackend_locks(opts):
+    '''
+    Clear any locks from configured backends
+    '''
+    for back_name in ('git', 'hg', 'svn'):
+        if back_name in opts['fileserver_backend']:
+            full_name = back_name + 'fs'
+            backend = getattr(salt.fileserver, full_name, None)
+            if backend is None:
+                log.warning('Unable to access %s backend', full_name)
+                continue
+            backend.__opts__ = opts
+            backend.clear_lock()
+
+
+def clear_git_pillar_locks(opts):
+    '''
+    Clear any update/checkout locks present in git_pillar remotes
+    '''
+    for ext_pillar in opts.get('ext_pillar', []):
+        pillar_type = next(iter(ext_pillar))
+        if pillar_type == 'git' and isinstance(ext_pillar[pillar_type], list):
+            pillar = salt.utils.gitfs.GitPillar(opts)
+            pillar.init_remotes(ext_pillar[pillar_type],
+                                git_pillar.PER_REMOTE_OVERRIDES)
+            for lock_type in ('update', 'checkout'):
+                for remote in pillar.remotes:
+                    remote.clear_lock(lock_type=lock_type)
 
 
 def clean_expired_tokens(opts):
@@ -194,7 +225,15 @@ def access_keys(opts):
     '''
     users = []
     keys = {}
-    acl_users = set(opts['client_acl'].keys())
+    if opts['client_acl'] or opts['client_acl_blacklist']:
+        salt.utils.warn_until(
+                'Nitrogen',
+                'ACL rules should be configured with \'publisher_acl\' and '
+                '\'publisher_acl_blacklist\' not \'client_acl\' and \'client_acl_blacklist\'. '
+                'This functionality will be removed in Salt Nitrogen.'
+                )
+    publisher_acl = opts['publisher_acl'] or opts['client_acl']
+    acl_users = set(publisher_acl.keys())
     if opts.get('user'):
         acl_users.add(opts['user'])
     acl_users.add(salt.utils.get_user())
@@ -221,6 +260,9 @@ def access_keys(opts):
 
         if os.path.exists(keyfile):
             log.debug('Removing stale keyfile: {0}'.format(keyfile))
+            if salt.utils.is_windows() and not os.access(keyfile, os.W_OK):
+                # Cannot delete read-only files on Windows.
+                os.chmod(keyfile, stat.S_IRUSR | stat.S_IWUSR)
             os.unlink(keyfile)
 
         key = salt.crypt.Crypticle.generate_key_string()
@@ -328,7 +370,7 @@ class AutoKey(object):
 
         if not self.check_permissions(signing_file):
             message = 'Wrong permissions for {0}, ignoring content'
-            log.warn(message.format(signing_file))
+            log.warning(message.format(signing_file))
             return False
 
         with salt.utils.fopen(signing_file, 'r') as fp_:
@@ -348,7 +390,7 @@ class AutoKey(object):
         autosign_dir = os.path.join(self.opts['pki_dir'], 'minions_autosign')
 
         # cleanup expired files
-        expire_minutes = self.opts.get('autosign_expire_minutes', 10)
+        expire_minutes = self.opts.get('autosign_timeout', 120)
         if expire_minutes > 0:
             min_time = time.time() - (60 * int(expire_minutes))
             for root, dirs, filenames in os.walk(autosign_dir):
@@ -356,7 +398,7 @@ class AutoKey(object):
                     stub_file = os.path.join(autosign_dir, f)
                     mtime = os.path.getmtime(stub_file)
                     if mtime < min_time:
-                        log.warn('Autosign keyid expired {0}'.format(stub_file))
+                        log.warning('Autosign keyid expired {0}'.format(stub_file))
                         os.remove(stub_file)
 
         stub_file = os.path.join(autosign_dir, keyid)
@@ -457,6 +499,7 @@ class RemoteFuncs(object):
         good = self.ckminions.auth_check(
                 perms,
                 load['fun'],
+                load['arg'],
                 load['tgt'],
                 load.get('tgt_type', 'glob'),
                 publish_validate=True)
@@ -475,6 +518,9 @@ class RemoteFuncs(object):
             if saltenv not in file_roots:
                 file_roots[saltenv] = []
         mopts['file_roots'] = file_roots
+        mopts['top_file_merging_strategy'] = self.opts['top_file_merging_strategy']
+        mopts['env_order'] = self.opts['env_order']
+        mopts['default_top'] = self.opts['default_top']
         if load.get('env_only'):
             return mopts
         mopts['renderer'] = self.opts['renderer']
@@ -697,7 +743,9 @@ class RemoteFuncs(object):
         '''
         if any(key not in load for key in ('id', 'grains')):
             return False
-        pillar = salt.pillar.Pillar(
+#        pillar = salt.pillar.Pillar(
+        log.debug('Master _pillar using ext: {0}'.format(load.get('ext')))
+        pillar = salt.pillar.get_pillar(
                 self.opts,
                 load['grains'],
                 load['id'],
@@ -823,19 +871,20 @@ class RemoteFuncs(object):
         if not good:
             # The minion is not who it says it is!
             # We don't want to listen to it!
-            log.warn(
+            log.warning(
                     'Minion id {0} is not who it says it is!'.format(
                     load['id']
                     )
             )
             return {}
         # Prepare the runner object
-        opts = {'fun': load['fun'],
+        opts = {}
+        opts.update(self.opts)
+        opts.update({'fun': load['fun'],
                 'arg': load['arg'],
                 'id': load['id'],
                 'doc': False,
-                'conf_file': self.opts['conf_file']}
-        opts.update(self.opts)
+                'conf_file': self.opts['conf_file']})
         runner = salt.runner.Runner(opts)
         return runner.run()
 
@@ -948,7 +997,7 @@ class RemoteFuncs(object):
             except ValueError:
                 msg = 'Failed to parse timeout value: {0}'.format(
                         load['tmo'])
-                log.warn(msg)
+                log.warning(msg)
                 return {}
         if 'timeout' in load:
             try:
@@ -956,7 +1005,7 @@ class RemoteFuncs(object):
             except ValueError:
                 msg = 'Failed to parse timeout value: {0}'.format(
                         load['timeout'])
-                log.warn(msg)
+                log.warning(msg)
                 return {}
         if 'tgt_type' in load:
             if load['tgt_type'].startswith('node'):
@@ -1328,13 +1377,21 @@ class LocalFuncs(object):
         # check blacklist/whitelist
         good = True
         # Check if the user is blacklisted
-        for user_re in self.opts['client_acl_blacklist'].get('users', []):
+        if self.opts['client_acl'] or self.opts['client_acl_blacklist']:
+            salt.utils.warn_until(
+                    'Nitrogen',
+                    'ACL rules should be configured with \'publisher_acl\' and '
+                    '\'publisher_acl_blacklist\' not \'client_acl\' and \'client_acl_blacklist\'. '
+                    'This functionality will be removed in Salt Nitrogen.'
+                    )
+        blacklist = self.opts['publisher_acl_blacklist'] or self.opts['client_acl_blacklist']
+        for user_re in blacklist.get('users', []):
             if re.match(user_re, load['user']):
                 good = False
                 break
 
         # check if the cmd is blacklisted
-        for module_re in self.opts['client_acl_blacklist'].get('modules', []):
+        for module_re in blacklist.get('modules', []):
             # if this is a regular command, its a single function
             if isinstance(load['fun'], str):
                 funs_to_check = [load['fun']]
@@ -1390,6 +1447,7 @@ class LocalFuncs(object):
                         if token['name'] in self.opts['external_auth'][token['eauth']]
                         else self.opts['external_auth'][token['eauth']]['*'],
                     load['fun'],
+                    load['arg'],
                     load['tgt'],
                     load.get('tgt_type', 'glob'))
             if not good:
@@ -1431,6 +1489,7 @@ class LocalFuncs(object):
                         if name in self.opts['external_auth'][extra['eauth']]
                         else self.opts['external_auth'][extra['eauth']]['*'],
                     load['fun'],
+                    load['arg'],
                     load['tgt'],
                     load.get('tgt_type', 'glob'))
             if not good:
@@ -1478,14 +1537,16 @@ class LocalFuncs(object):
                             'Authentication failure of type "user" occurred.'
                         )
                         return ''
-                    if load['user'] not in self.opts['client_acl']:
+                    acl = self.opts['publisher_acl'] or self.opts['client_acl']
+                    if load['user'] not in acl:
                         log.warning(
                             'Authentication failure of type "user" occurred.'
                         )
                         return ''
                     good = self.ckminions.auth_check(
-                            self.opts['client_acl'][load['user']],
+                            acl[load['user']],
                             load['fun'],
+                            load['arg'],
                             load['tgt'],
                             load.get('tgt_type', 'glob'))
                     if not good:
@@ -1607,6 +1668,9 @@ class LocalFuncs(object):
 
             if 'metadata' in load['kwargs']:
                 pub_load['metadata'] = load['kwargs'].get('metadata')
+
+            if 'ret_kwargs' in load['kwargs']:
+                pub_load['ret_kwargs'] = load['kwargs'].get('ret_kwargs')
 
         if 'user' in load:
             log.info(

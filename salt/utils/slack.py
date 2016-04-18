@@ -2,7 +2,7 @@
 '''
 Library for interacting with Slack API
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 :configuration: This module can be used by specifying the name of a
     configuration profile in the minion config, minion pillar, or master
@@ -24,6 +24,7 @@ from salt.ext.six.moves.urllib.parse import urljoin as _urljoin
 import salt.ext.six.moves.http_client
 from salt.version import __version__
 # pylint: enable=import-error,no-name-in-module
+import salt.utils.http
 
 log = logging.getLogger(__name__)
 
@@ -116,10 +117,14 @@ def query(function,
         log.debug(query_params)
         log.debug(data)
         log.debug(result)
-        _result = result['dict']
-        if 'error' in _result:
-            ret['message'] = result['error']
+        if 'dict' in result:
+            _result = result['dict']
+            if 'error' in _result:
+                ret['message'] = result['error']
+                ret['res'] = False
+                return ret
+            ret['message'] = _result.get(response)
+        else:
+            ret['message'] = 'invalid_auth'
             ret['res'] = False
-            return ret
-        ret['message'] = _result.get(response)
         return ret

@@ -60,6 +60,8 @@ boto_conn_parameters = {'aws_access_key_id': access_key, 'aws_secret_access_key'
 
 opts = salt.config.DEFAULT_MASTER_OPTS
 utils = salt.loader.utils(opts, whitelist=['boto'])
+funcs = salt.loader.minion_mods(opts, utils=utils)
+boto_secgroup.__salt__ = funcs
 boto_secgroup.__utils__ = utils
 boto_secgroup.__virtual__()
 
@@ -205,7 +207,7 @@ class BotoSecgroupTestCase(TestCase):
         group.authorize(ip_protocol=ip_protocol, from_port=from_port, to_port=to_port, cidr_ip=cidr_ip)
         # setup the expected get_config result
         expected_get_config_result = OrderedDict([('name', group.name), ('group_id', group.id), ('owner_id', u'111122223333'),
-                                                 ('description', group.description),
+                                                 ('description', group.description), ('tags', {}),
                                                  ('rules', [{'to_port': to_port, 'from_port': from_port,
                                                   'ip_protocol': ip_protocol, 'cidr_ip': cidr_ip}]),
                                                  ('rules_egress', [])])

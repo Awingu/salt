@@ -3,7 +3,7 @@
 Vultr Cloud Module using python-vultr bindings
 ==============================================
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 The Vultr cloud module is used to control access to the Vultr VPS system.
 
@@ -17,7 +17,19 @@ Set up the cloud configuration at ``/etc/salt/cloud.providers`` or
 my-vultr-config:
   # Vultr account api key
   api_key: <supersecretapi_key>
-  driver: vultrpy
+  driver: vultr
+
+Set up the cloud profile at ``/etc/salt/cloud.profiles`` or
+``/etc/salt/cloud.profiles.d/vultr.conf``:
+
+.. code-block:: yaml
+
+    nyc-4gb-4cpu-ubuntu-14-04:
+      location: 1
+      provider: my-vultr-config
+      image: 160
+      size: 95
+      enable_private_network: True
 
 '''
 
@@ -26,11 +38,15 @@ from __future__ import absolute_import
 import pprint
 import logging
 import time
+import urllib
 
 # Import salt cloud libs
 import salt.config as config
 import salt.utils.cloud
-from salt.exceptions import SaltCloudSystemExit
+from salt.exceptions import (
+    SaltCloudConfigError,
+    SaltCloudSystemExit
+)
 
 # Get logging started
 log = logging.getLogger(__name__)
@@ -89,7 +105,7 @@ def list_nodes(**kwargs):
     nodes = list_nodes_full()
     for node in nodes:
         ret[node] = {}
-        for prop in ('id', 'image', 'size', 'state', 'private_ips', 'public_ips'):
+        for prop in 'id', 'image', 'size', 'state', 'private_ips', 'public_ips':
             ret[node][prop] = nodes[node][prop]
 
     return ret
@@ -109,7 +125,7 @@ def list_nodes_full(**kwargs):
         ret[name]['image'] = nodes[node]['os']
         ret[name]['size'] = nodes[node]['VPSPLANID']
         ret[name]['state'] = nodes[node]['status']
-        ret[name]['private_ips'] = []
+        ret[name]['private_ips'] = nodes[node]['internal_ip']
         ret[name]['public_ips'] = nodes[node]['main_ip']
 
     return ret
@@ -130,7 +146,7 @@ def destroy(name):
     '''
     node = show_instance(name, call='action')
     params = {'SUBID': node['SUBID']}
-    return _query('server/destroy', method='POST', decode=False, data=params)
+    return _query('server/destroy', method='POST', decode=False, data=urllib.urlencode(params))
 
 
 def stop(*args, **kwargs):
@@ -171,6 +187,18 @@ def create(vm_):
     if 'driver' not in vm_:
         vm_['driver'] = vm_['provider']
 
+    private_networking = config.get_cloud_config_value(
+        'enable_private_network', vm_, __opts__, search_global=False, default=False,
+    )
+
+    if private_networking is not None:
+        if not isinstance(private_networking, bool):
+            raise SaltCloudConfigError("'private_networking' should be a boolean value.")
+    if private_networking is True:
+        enable_private_network = 'yes'
+    else:
+        enable_private_network = 'no'
+
     salt.utils.cloud.fire_event(
         'event',
         'starting create',
@@ -188,6 +216,8 @@ def create(vm_):
         'OSID': vm_['image'],
         'VPSPLANID': vm_['size'],
         'DCID': vm_['location'],
+        'hostname': vm_['name'],
+        'enable_private_network': enable_private_network,
     }
 
     log.info('Creating Cloud VM {0}'.format(vm_['name']))
@@ -201,7 +231,7 @@ def create(vm_):
     )
 
     try:
-        data = _query('server/create', method='POST', data=kwargs)
+        data = _query('server/create', method='POST', data=urllib.urlencode(kwargs))
     except Exception as exc:
         log.error(
             'Error creating {0} on Vultr\n\n'
@@ -262,9 +292,9 @@ def create(vm_):
 
     ret.update(show_instance(vm_['name'], call='action'))
 
-    log.info('Created Cloud VM {0[name]!r}'.format(vm_))
+    log.info('Created Cloud VM \'{0[name]}\''.format(vm_))
     log.debug(
-        '{0[name]!r} VM creation details:\n{1}'.format(
+        '\'{0[name]}\' VM creation details:\n{1}'.format(
         vm_, pprint.pformat(data)
             )
     )

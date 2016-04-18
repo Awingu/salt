@@ -479,6 +479,9 @@ class BaseSchemaItemMeta(six.with_metaclass(Prepareable, type)):
         attributes = []
         for base in reversed(bases):
             try:
+                base_attributes = getattr(base, '_attributes', [])
+                if base_attributes:
+                    attributes.extend(base_attributes)
                 # Extend the attributes with the base argspec argument names
                 # but skip "self"
                 for argname in inspect.getargspec(base.__init__).args:
@@ -562,10 +565,10 @@ class Schema(six.with_metaclass(SchemaMeta, object)):
         serialized['type'] = 'object'
         properties = OrderedDict()
         cls.after_items_update = []
-        for name in cls._order:
+        for name in cls._order:  # pylint: disable=E1133
             skip_order = False
             item_name = None
-            if name in cls._sections:
+            if name in cls._sections:  # pylint: disable=E1135
                 section = cls._sections[name]
                 serialized_section = section.serialize(None if section.__flatten__ is True else name)
                 if section.__flatten__ is True:
@@ -583,7 +586,7 @@ class Schema(six.with_metaclass(SchemaMeta, object)):
                     # Store it as a configuration section
                     properties[name] = serialized_section
 
-            if name in cls._items:
+            if name in cls._items:  # pylint: disable=E1135
                 config = cls._items[name]
                 item_name = config.__item_name__ or name
                 # Handle the configuration items defined in the class instance
@@ -865,6 +868,11 @@ class BaseSchemaItem(SchemaItem):
     #    return output + '\n'
 
 
+class NullItem(BaseSchemaItem):
+
+    __type__ = 'null'
+
+
 class BooleanItem(BaseSchemaItem):
     __type__ = 'boolean'
 
@@ -1030,11 +1038,11 @@ class NumberItem(BaseSchemaItem):
         :param minimum:
             The minimum allowed value
         :param exclusive_minimum:
-            Wether a value is allowed to be exactly equal to the minimum
+            Whether a value is allowed to be exactly equal to the minimum
         :param maximum:
             The maximum allowed value
         :param exclusive_maximum:
-            Wether a value is allowed to be exactly equal to the maximum
+            Whether a value is allowed to be exactly equal to the maximum
         '''
         if multiple_of is not None:
             self.multiple_of = multiple_of
@@ -1118,24 +1126,25 @@ class ArrayItem(BaseSchemaItem):
         super(ArrayItem, self).__init__(**kwargs)
 
     def __validate_attributes__(self):
-        if not self.items:
+        if not self.items and not self.additional_items:
             raise RuntimeError(
-                'The passed items must not be empty'
+                'One of items or additional_items must be passed.'
             )
-        if isinstance(self.items, (list, tuple)):
-            for item in self.items:
-                if not isinstance(item, (Schema, SchemaItem)):
-                    raise RuntimeError(
-                        'All items passed in the item argument tuple/list must be '
-                        'a subclass of Schema, SchemaItem or BaseSchemaItem, '
-                        'not {0}'.format(type(item))
-                    )
-        elif not isinstance(self.items, (Schema, SchemaItem)):
-            raise RuntimeError(
-                'The items argument passed must be a subclass of '
-                'Schema, SchemaItem or BaseSchemaItem, not '
-                '{0}'.format(type(self.items))
-            )
+        if self.items is not None:
+            if isinstance(self.items, (list, tuple)):
+                for item in self.items:
+                    if not isinstance(item, (Schema, SchemaItem)):
+                        raise RuntimeError(
+                            'All items passed in the item argument tuple/list must be '
+                            'a subclass of Schema, SchemaItem or BaseSchemaItem, '
+                            'not {0}'.format(type(item))
+                        )
+            elif not isinstance(self.items, (Schema, SchemaItem)):
+                raise RuntimeError(
+                    'The items argument passed must be a subclass of '
+                    'Schema, SchemaItem or BaseSchemaItem, not '
+                    '{0}'.format(type(self.items))
+                )
 
     def __get_items__(self):
         if isinstance(self.items, (Schema, SchemaItem)):
@@ -1221,9 +1230,9 @@ class DictItem(BaseSchemaItem):
         super(DictItem, self).__init__(**kwargs)
 
     def __validate_attributes__(self):
-        if not self.properties and not self.pattern_properties:
+        if not self.properties and not self.pattern_properties and not self.additional_properties:
             raise RuntimeError(
-                'One of properties or pattern properties must be passed'
+                'One of properties, pattern_properties or additional_properties must be passed'
             )
         if self.properties is not None:
             if not isinstance(self.properties, (Schema, dict)):
@@ -1289,6 +1298,22 @@ class DictItem(BaseSchemaItem):
     def __call__(self, flatten=False):
         self.__flatten__ = flatten
         return self
+
+    def serialize(self):
+        result = super(DictItem, self).serialize()
+        required = []
+        if self.properties is not None:
+            if isinstance(self.properties, Schema):
+                serialized = self.properties.serialize()
+                if 'required' in serialized:
+                    required.extend(serialized['required'])
+            else:
+                for key, prop in self.properties.items():
+                    if prop.required:
+                        required.append(key)
+        if required:
+            result['required'] = required
+        return result
 
 
 class RequirementsItem(SchemaItem):

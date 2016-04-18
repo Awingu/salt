@@ -21,6 +21,8 @@ automatically
         - dest_dir: /tmp/pkg
         - spec: salt://pkg/salt/spec/salt.spec
         - template: jinja
+        - deps:
+          - salt://pkg/salt/sources/required_dependency.rpm
         - tgt: epel-7-x86_64
         - sources:
           - salt://pkg/salt/sources/logrotate.salt
@@ -42,21 +44,53 @@ automatically
 '''
 # Import python libs
 from __future__ import absolute_import, print_function
+import errno
+import logging
 import os
 
+# Import salt libs
+import salt.utils
+from salt.ext import six
 
-def built(
-        name,
-        runas,
-        dest_dir,
-        spec,
-        sources,
-        template,
-        tgt,
-        deps=None,
-        results=None,
-        always=False,
-        saltenv='base'):
+log = logging.getLogger(__name__)
+
+
+def _get_missing_results(results, dest_dir):
+    '''
+    Return a list of the filenames specified in the ``results`` argument, which
+    are not present in the dest_dir.
+    '''
+    try:
+        present = set(os.listdir(dest_dir))
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            log.debug(
+                'pkgbuild.built: dest_dir \'{0}\' does not exist'
+                .format(dest_dir)
+            )
+        elif exc.errno == errno.EACCES:
+            log.error(
+                'pkgbuilt.built: cannot access dest_dir \'{0}\''
+                .format(dest_dir)
+            )
+        present = set()
+    return sorted(set(results).difference(present))
+
+
+def built(name,
+          runas,
+          dest_dir,
+          spec,
+          sources,
+          tgt,
+          template=None,
+          deps=None,
+          env=None,
+          results=None,
+          force=False,
+          always=None,
+          saltenv='base',
+          log_dir='/var/log/salt/pkgbuild'):
     '''
     Ensure that the named package is built and exists in the named directory
 
@@ -75,11 +109,15 @@ def built(
     sources
         The list of package sources
 
-    template
-        Set to run the spec file through a templating engine
-
     tgt
         The target platform to run the build on
+
+    template
+        Run the spec file through a templating engine
+
+        .. versionchanged:: 2015.8.2
+            This argument is now optional, allowing for no templating engine to
+            be used if none is desired.
 
     deps
         Packages required to ensure that the named package is built
@@ -88,36 +126,95 @@ def built(
         downloading directly from Amazon S3 compatible URLs with both
         pre-configured and automatic IAM credentials
 
+    env
+        A dictionary of environment variables to be set prior to execution.
+        Example:
+
+        .. code-block:: yaml
+
+                - env:
+                    DEB_BUILD_OPTIONS: 'nocheck'
+
+        .. warning::
+
+            The above illustrates a common PyYAML pitfall, that **yes**,
+            **no**, **on**, **off**, **true**, and **false** are all loaded as
+            boolean ``True`` and ``False`` values, and must be enclosed in
+            quotes to be used as strings. More info on this (and other) PyYAML
+            idiosyncrasies can be found :doc:`here
+            </topics/troubleshooting/yaml_idiosyncrasies>`.
+
     results
         The names of the expected rpms that will be built
 
+    force : False
+        If ``True``, packages will be built even if they already exist in the
+        ``dest_dir``. This is useful when building a package for continuous or
+        nightly package builds.
+
+        .. versionadded:: 2015.8.2
+
     always
-        Build with every run (good if the package is for continuous or
-        nightly package builds)
+        If ``True``, packages will be built even if they already exist in the
+        ``dest_dir``. This is useful when building a package for continuous or
+        nightly package builds.
+
+        .. deprecated:: 2015.8.2
+            Use ``force`` instead.
 
     saltenv
         The saltenv to use for files downloaded from the salt filesever
+
+    log_dir : /var/log/salt/rpmbuild
+        Root directory for log files created from the build. Logs will be
+        organized by package name, version, OS release, and CPU architecture
+        under this directory.
+
+        .. versionadded:: 2015.8.2
     '''
     ret = {'name': name,
            'changes': {},
            'comment': '',
            'result': True}
-    if not always:
-        if isinstance(results, str):
-            results = results.split(',')
-        results = set(results)
-        present = set()
-        if os.path.isdir(dest_dir):
-            for fn_ in os.listdir(dest_dir):
-                present.add(fn_)
-        need = results.difference(present)
-        if not need:
-            ret['comment'] = 'All needed packages exist'
-            return ret
-    if __opts__['test']:
-        ret['comment'] = 'Packages need to be built'
-        ret['result'] = None
+
+    if always is not None:
+        salt.utils.warn_until(
+            'Carbon',
+            'The \'always\' argument to the pkgbuild.built state has been '
+            'deprecated, please use \'force\' instead.'
+        )
+        force = always
+
+    if not results:
+        ret['comment'] = '\'results\' argument is required'
+        ret['result'] = False
         return ret
+
+    if isinstance(results, six.string_types):
+        results = results.split(',')
+
+    needed = _get_missing_results(results, dest_dir)
+    if not force and not needed:
+        ret['comment'] = 'All needed packages exist'
+        return ret
+
+    if __opts__['test']:
+        ret['result'] = None
+        if force:
+            ret['comment'] = 'Packages will be force-built'
+        else:
+            ret['comment'] = 'The following packages need to be built: '
+            ret['comment'] += ', '.join(needed)
+        return ret
+
+    # Need the check for None here, if env is not provided then it falls back
+    # to None and it is assumed that the environment is not being overridden.
+    if env is not None and not isinstance(env, dict):
+        ret['comment'] = ('Invalidly-formatted \'env\' parameter. See '
+                          'documentation.')
+        ret['result'] = False
+        return ret
+
     ret['changes'] = __salt__['pkgbuild.build'](
         runas,
         tgt,
@@ -125,13 +222,22 @@ def built(
         spec,
         sources,
         deps,
+        env,
         template,
-        saltenv)
-    ret['comment'] = 'Packages Built'
+        saltenv,
+        log_dir)
+
+    needed = _get_missing_results(results, dest_dir)
+    if needed:
+        ret['comment'] = 'The following packages were not built: '
+        ret['comment'] += ', '.join(needed)
+        ret['result'] = False
+    else:
+        ret['comment'] = 'All needed packages were built'
     return ret
 
 
-def repo(name):
+def repo(name, keyid=None, env=None):
     '''
     Make a package repository, the name is directoty to turn into a repo.
     This state is best used with onchanges linked to your package building
@@ -139,6 +245,30 @@ def repo(name):
 
     name
         The directory to find packages that will be in the repository
+
+    keyid
+        Optional Key ID to use in signing repository
+
+    env
+        A dictionary of environment variables to be utlilized in creating the repository.
+        Example:
+
+        .. code-block:: yaml
+
+                - env:
+                    OPTIONS: 'ask-passphrase'
+
+        .. warning::
+
+            The above illustrates a common PyYAML pitfall, that **yes**,
+            **no**, **on**, **off**, **true**, and **false** are all loaded as
+            boolean ``True`` and ``False`` values, and must be enclosed in
+            quotes to be used as strings. More info on this (and other) PyYAML
+            idiosyncrasies can be found :doc:`here
+            </topics/troubleshooting/yaml_idiosyncrasies>`.
+
+            Use of OPTIONS on some platforms, for example: ask-passphrase, will
+            require gpg-agent or similar to cache passphrases.
     '''
     ret = {'name': name,
            'changes': {},
@@ -148,6 +278,14 @@ def repo(name):
         ret['result'] = None
         ret['comment'] = 'Package repo at {0} will be rebuilt'.format(name)
         return ret
-    __salt__['pkgbuild.make_repo'](name)
+
+    # Need the check for None here, if env is not provided then it falls back
+    # to None and it is assumed that the environment is not being overridden.
+    if env is not None and not isinstance(env, dict):
+        ret['comment'] = ('Invalidly-formatted \'env\' parameter. See '
+                          'documentation.')
+        return ret
+
+    __salt__['pkgbuild.make_repo'](name, keyid, env)
     ret['changes'] = {'refresh': True}
     return ret

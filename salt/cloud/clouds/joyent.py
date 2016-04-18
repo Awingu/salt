@@ -66,6 +66,7 @@ from Crypto.Signature import PKCS1_v1_5
 
 # Import salt libs
 import salt.ext.six as six
+from salt.ext.six.moves import http_client  # pylint: disable=import-error,no-name-in-module
 import salt.utils.http
 import salt.utils.cloud
 import salt.config as config
@@ -78,12 +79,10 @@ from salt.exceptions import (
     SaltCloudNotFound,
 )
 
-# Import 3rd-party libs
-import salt.ext.six as six
-from salt.ext.six.moves import http_client  # pylint: disable=import-error,no-name-in-module
-
 # Get logging started
 log = logging.getLogger(__name__)
+
+__virtualname__ = 'joyent'
 
 JOYENT_API_HOST_SUFFIX = '.api.joyentcloud.com'
 JOYENT_API_VERSION = '~7.2'
@@ -108,6 +107,8 @@ VALID_RESPONSE_CODES = [
     http_client.NO_CONTENT
 ]
 
+DEFAULT_NETWORKS = ['Joyent-SDC-Public']
+
 
 # Only load in this module if the Joyent configurations are in place
 def __virtual__():
@@ -117,8 +118,7 @@ def __virtual__():
     if get_configured_provider() is False:
         return False
 
-    conn = None
-    return True
+    return __virtualname__
 
 
 def get_configured_provider():
@@ -127,7 +127,7 @@ def get_configured_provider():
     '''
     return config.is_provider_configured(
         __opts__,
-        __active_provider_name__ or 'joyent',
+        __active_provider_name__ or __virtualname__,
         ('user', 'password')
     )
 
@@ -145,7 +145,7 @@ def get_image(vm_):
         return images[vm_image]
 
     raise SaltCloudNotFound(
-        'The specified image, {0!r}, could not be found.'.format(vm_image)
+        'The specified image, \'{0}\', could not be found.'.format(vm_image)
     )
 
 
@@ -162,7 +162,7 @@ def get_size(vm_):
         return sizes[vm_size]
 
     raise SaltCloudNotFound(
-        'The specified size, {0!r}, could not be found.'.format(vm_size)
+        'The specified size, \'{0}\', could not be found.'.format(vm_size)
     )
 
 
@@ -197,8 +197,8 @@ def query_instance(vm_=None, call=None):
             return False
 
         if isinstance(data, dict) and 'error' in data:
-            log.warn(
-                'There was an error in the query {0}'.format(data['error'])  # pylint: disable=E1126
+            log.warning(
+                'There was an error in the query {0}'.format(data.get('error'))
             )
             # Trigger a failure in the wait for IP function
             return False
@@ -244,9 +244,10 @@ def create(vm_):
     '''
     try:
         # Check for required profile parameters before sending any API calls.
-        if config.is_profile_configured(__opts__,
-                                        __active_provider_name__ or 'joyent',
-                                        vm_['profile']) is False:
+        if vm_['profile'] and config.is_profile_configured(__opts__,
+                                                           __active_provider_name__ or 'joyent',
+                                                           vm_['profile'],
+                                                           vm_=vm_) is False:
             return False
     except AttributeError:
         pass
@@ -283,6 +284,7 @@ def create(vm_):
     salt.utils.cloud.check_name(vm_['name'], 'a-zA-Z0-9-.')
     kwargs = {
         'name': vm_['name'],
+        'networks': vm_.get('networks', DEFAULT_NETWORKS),
         'image': get_image(vm_),
         'size': get_size(vm_),
         'location': vm_.get('location', DEFAULT_LOCATION)
@@ -342,11 +344,13 @@ def create_node(**kwargs):
     size = kwargs['size']
     image = kwargs['image']
     location = kwargs['location']
+    networks = kwargs['networks']
 
     data = json.dumps({
         'name': name,
         'package': size['name'],
-        'image': image['name']
+        'image': image['name'],
+        'networks': networks
     })
 
     try:
@@ -585,7 +589,7 @@ def has_method(obj, method_name):
         return True
 
     log.error(
-        'Method {0!r} not yet supported!'.format(
+        'Method \'{0}\' not yet supported!'.format(
             method_name
         )
     )
@@ -1040,7 +1044,7 @@ def query(action=None,
     if command:
         path += '/{0}'.format(command)
 
-    log.debug('User: {0!r} on PATH: {1}'.format(user, path))
+    log.debug('User: \'{0}\' on PATH: {1}'.format(user, path))
 
     timenow = datetime.datetime.utcnow()
     timestamp = timenow.strftime('%a, %d %b %Y %H:%M:%S %Z').strip()
@@ -1081,7 +1085,7 @@ def query(action=None,
         text=True,
         status=True,
         headers=True,
-        verify=verify_ssl,
+        verify_ssl=verify_ssl,
         opts=__opts__,
     )
     log.debug(

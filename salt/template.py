@@ -43,14 +43,15 @@ def compile_template(template,
     ret = {}
 
     log.debug('compile template: {0}'.format(template))
-    # We "map" env to the same as saltenv until Boron is out in order to follow the same deprecation path
-    kwargs.setdefault('env', saltenv)
-    salt.utils.warn_until(
-        'Boron',
-        'We are only supporting \'env\' in the templating context until Boron comes out. '
-        'Once this warning is shown, please remove the above mapping',
-        _dont_call_warnings=True
-    )
+
+    if 'env' in kwargs:
+        salt.utils.warn_until(
+            'Oxygen',
+            'Parameter \'env\' has been detected in the argument list.  This '
+            'parameter is no longer used and has been replaced by \'saltenv\' '
+            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            )
+        kwargs.pop('env')
 
     if template != ':string:':
         # Template was specified incorrectly
@@ -63,7 +64,7 @@ def compile_template(template,
             return ret
         # Template is an empty file
         if salt.utils.is_empty(template):
-            log.warn('Template is an empty file: {0}'.format(template))
+            log.warning('Template is an empty file: {0}'.format(template))
             return ret
 
         with codecs.open(template, encoding=SLS_ENCODING) as ifile:
@@ -79,9 +80,9 @@ def compile_template(template,
 
     input_data = string_io(input_data)
     for render, argline in render_pipe:
-        # For GPG renderer, input_data can be an OrderedDict. Repress the
-        # error.
-        if not isinstance(input_data, OrderedDict):
+        # For GPG renderer, input_data can be an OrderedDict (from YAML) or dict (from py renderer).
+        # Repress the error.
+        if not isinstance(input_data, (dict, OrderedDict)):
             try:
                 input_data.seek(0)
             except Exception as exp:
@@ -91,7 +92,15 @@ def compile_template(template,
         render_kwargs.update(kwargs)
         if argline:
             render_kwargs['argline'] = argline
+        start = time.time()
         ret = render(input_data, saltenv, sls, **render_kwargs)
+        log.profile(
+            'Time (in seconds) to render \'{0}\' using \'{1}\' renderer: {2}'.format(
+                template,
+                render.__module__.split('.')[-1],
+                time.time() - start
+            )
+        )
         if ret is None:
             # The file is empty or is being written elsewhere
             time.sleep(0.01)

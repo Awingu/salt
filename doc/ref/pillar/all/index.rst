@@ -23,6 +23,7 @@ Full list of builtin pillar modules
     git_pillar
     hg_pillar
     hiera
+    http_yaml
     libvirt
     mongo
     mysql
@@ -34,8 +35,10 @@ Full list of builtin pillar modules
     redismod
     s3
     sql_base
+    sqlcipher
     sqlite3
     stack
     svn_pillar
     varstack_pillar
+    vault
     virtkey

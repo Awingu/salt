@@ -13,9 +13,9 @@ vSphere Cloud Module
         :doc:`Getting started with VMware </topics/cloud/vmware>` to get started
         and convert your vsphere provider configurations to use the vmware driver.
 
-The vSphere cloud module is used to control access to VMWare vSphere.
+The vSphere cloud module is used to control access to VMware vSphere.
 
-:depends:   - PySphere Python module >= 0.1.8
+:depends: PySphere Python module >= 0.1.8
 
 Note: Ensure python pysphere module is installed by running following one-liner
 check. The output should be 0.
@@ -42,7 +42,7 @@ configuration at:
       url: 'https://10.1.1.1:443'
 
 Note: Your URL may or may not look like any of the following, depending on how
-your VMWare installation is configured:
+your VMware installation is configured:
 
 .. code-block:: bash
 
@@ -124,34 +124,47 @@ except Exception:  # pylint: disable=W0703
 # Get logging started
 log = logging.getLogger(__name__)
 
+__virtualname__ = 'vsphere'
+
 
 # Only load in this module if the vSphere configurations are in place
 def __virtual__():
     '''
     Check for vSphere configurations.
     '''
-    if not HAS_LIBS:
-        return False
-
     if get_configured_provider() is False:
         return False
 
-    return True
+    if get_dependencies() is False:
+        return False
+
+    warn_until(
+        'Carbon',
+        'The vsphere driver is deprecated in favor of the vmware driver and will be removed '
+        'in Salt Carbon. Please convert your vsphere provider configs to use the vmware driver.'
+    )
+
+    return __virtualname__
 
 
 def get_configured_provider():
     '''
     Return the first configured instance.
     '''
-    warn_until(
-        'Carbon',
-        'The vsphere driver is deprecated in favor of the vmware driver and will be removed '
-        'in Salt Carbon. Please convert your vsphere provider configs to use the vmware driver.'
-    )
     return config.is_provider_configured(
         __opts__,
-        __active_provider_name__ or 'vsphere',
+        __active_provider_name__ or __virtualname__,
         ('user',)
+    )
+
+
+def get_dependencies():
+    '''
+    Warn if dependencies aren't met.
+    '''
+    return config.check_driver_dependencies(
+        __virtualname__,
+        {'pysphere': HAS_LIBS}
     )
 
 
@@ -230,9 +243,10 @@ def create(vm_):
     '''
     try:
         # Check for required profile parameters before sending any API calls.
-        if config.is_profile_configured(__opts__,
-                                        __active_provider_name__ or 'vsphere',
-                                        vm_['profile']) is False:
+        if vm_['profile'] and config.is_profile_configured(__opts__,
+                                                           __active_provider_name__ or 'vsphere',
+                                                           vm_['profile'],
+                                                           vm_=vm_) is False:
             return False
     except AttributeError:
         pass
@@ -320,9 +334,9 @@ def create(vm_):
     if show_deploy_args:
         ret['deploy_kwargs'] = deploy_kwargs
 
-    log.info('Created Cloud VM {0[name]!r}'.format(vm_))
+    log.info('Created Cloud VM \'{0[name]}\''.format(vm_))
     log.debug(
-        '{0[name]!r} VM creation details:\n{1}'.format(
+        '\'{0[name]}\' VM creation details:\n{1}'.format(
             vm_, pprint.pformat(ret)
         )
     )
@@ -350,9 +364,11 @@ def wait_for_ip(vm_):
         Wait for the IP address to become available
         '''
         instance = show_instance(name=vm_['name'], call='action')
-        if 'ip_address' in instance:
-            if instance['ip_address'] is not None:
-                return instance['ip_address']
+        ip_addrs = instance.get('ip_address', None)
+
+        if ip_addrs is not None:
+            return ip_addrs
+
         time.sleep(1)
         return False
 
@@ -501,10 +517,12 @@ def _get_instance_properties(instance, from_cache=True):
     for device in ret['devices']:
         if '_obj' in ret['devices'][device]:
             del ret['devices'][device]['_obj']
+
         # TODO: this is a workaround because the net does not return mac...?
-        if ret['mac_address'] is None:
-            if 'macAddress' in ret['devices'][device]:
-                ret['mac_address'] = ret['devices'][device]['macAddress']
+        mac_address = ret.get('mac_address', None)
+        if mac_address is None and 'macAddress' in ret['devices'][device]:
+            ret['mac_address'] = ret['devices'][device]['macAddress']
+
     ret['status'] = instance.get_status()
     ret['tools_status'] = instance.get_tools_status()
 
@@ -727,7 +745,7 @@ def list_clusters(kwargs=None, call=None):  # pylint: disable=W0613
 
 def list_folders(kwargs=None, call=None):  # pylint: disable=W0613
     '''
-    List the folders for this VMWare environment
+    List the folders for this VMware environment
     '''
     if call != 'function':
         log.error(

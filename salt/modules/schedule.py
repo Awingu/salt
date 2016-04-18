@@ -54,10 +54,15 @@ SCHEDULE_CONF = [
         'cron',
         'until',
         'after',
+        'return_config',
+        'return_kwargs'
 ]
 
 
-def list_(show_all=False, where=None, return_yaml=True):
+def list_(show_all=False,
+          show_disabled=True,
+          where=None,
+          return_yaml=True):
     '''
     List the jobs currently scheduled on the minion
 
@@ -67,7 +72,12 @@ def list_(show_all=False, where=None, return_yaml=True):
 
         salt '*' schedule.list
 
+        # Show all jobs including hidden internal jobs
         salt '*' schedule.list show_all=True
+
+        # Hide disabled jobs from list of jobs
+        salt '*' schedule.list show_disabled=False
+
     '''
 
     schedule = {}
@@ -97,6 +107,11 @@ def list_(show_all=False, where=None, return_yaml=True):
             del schedule[job]
             continue
 
+        # if enabled is not included in the job,
+        # assume job is enabled.
+        if 'enabled' not in schedule[job]:
+            schedule[job]['enabled'] = True
+
         for item in pycopy.copy(schedule[job]):
             if item not in SCHEDULE_CONF:
                 del schedule[job][item]
@@ -106,8 +121,22 @@ def list_(show_all=False, where=None, return_yaml=True):
             if schedule[job][item] == 'false':
                 schedule[job][item] = False
 
+        # if the job is disabled and show_disabled is False, skip job
+        if not show_disabled and not schedule[job]['enabled']:
+            del schedule[job]
+            continue
+
         if '_seconds' in schedule[job]:
-            schedule[job]['seconds'] = schedule[job]['_seconds']
+            # if _seconds is greater than zero
+            # then include the original back in seconds.
+            # otherwise remove seconds from the listing as the
+            # original item didn't include it.
+            if schedule[job]['_seconds'] > 0:
+                schedule[job]['seconds'] = schedule[job]['_seconds']
+            elif 'seconds' in schedule[job]:
+                del schedule[job]['seconds']
+
+            # remove _seconds from the listing
             del schedule[job]['_seconds']
 
     if schedule:
@@ -312,6 +341,11 @@ def build_schedule_item(name, **kwargs):
     else:
         schedule[name]['name'] = name
 
+    if 'enabled' in kwargs:
+        schedule[name]['enabled'] = kwargs['enabled']
+    else:
+        schedule[name]['enabled'] = True
+
     if 'jid_include' not in kwargs or kwargs['jid_include']:
         schedule[name]['jid_include'] = True
 
@@ -325,9 +359,14 @@ def build_schedule_item(name, **kwargs):
             schedule[name]['splay'] = kwargs['splay']
 
     for item in ['range', 'when', 'once', 'once_fmt', 'cron', 'returner',
-            'return_config', 'until']:
+                 'return_config', 'return_kwargs', 'until', 'enabled']:
         if item in kwargs:
             schedule[name][item] = kwargs[item]
+
+    # if enabled is not included in the job,
+    # assume job is enabled.
+    if 'enabled' not in kwargs:
+        schedule[name]['enabled'] = True
 
     return schedule[name]
 

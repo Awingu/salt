@@ -117,20 +117,20 @@ def update():
         log.info('Sync local cache from S3 completed.')
 
 
-def find_file(path, saltenv='base', env=None, **kwargs):
+def find_file(path, saltenv='base', **kwargs):
     '''
     Look through the buckets cache file for a match.
     If the field is found, it is retrieved from S3 only if its cached version
     is missing, or if the MD5 does not match.
     '''
-    if env is not None:
+    if 'env' in kwargs:
         salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        # Backwards compatibility
-        saltenv = env
+            'Oxygen',
+            'Parameter \'env\' has been detected in the argument list.  This '
+            'parameter is no longer used and has been replaced by \'saltenv\' '
+            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            )
+        kwargs.pop('env')
 
     fnd = {'bucket': None,
            'path': None}
@@ -167,11 +167,12 @@ def file_hash(load, fnd):
     '''
     if 'env' in load:
         salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+            'Oxygen',
+            'Parameter \'env\' has been detected in the argument list.  This '
+            'parameter is no longer used and has been replaced by \'saltenv\' '
+            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            )
+        load.pop('env')
 
     ret = {}
 
@@ -199,11 +200,12 @@ def serve_file(load, fnd):
     '''
     if 'env' in load:
         salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+            'Oxygen',
+            'Parameter \'env\' has been detected in the argument list.  This '
+            'parameter is no longer used and has been replaced by \'saltenv\' '
+            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            )
+        load.pop('env')
 
     ret = {'data': '',
            'dest': ''}
@@ -240,11 +242,12 @@ def file_list(load):
     '''
     if 'env' in load:
         salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+            'Oxygen',
+            'Parameter \'env\' has been detected in the argument list.  This '
+            'parameter is no longer used and has been replaced by \'saltenv\' '
+            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            )
+        load.pop('env')
 
     ret = []
 
@@ -280,11 +283,12 @@ def dir_list(load):
     '''
     if 'env' in load:
         salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+            'Oxygen',
+            'Parameter \'env\' has been detected in the argument list.  This '
+            'parameter is no longer used and has been replaced by \'saltenv\' '
+            'as of Salt Carbon.  This warning will be removed in Salt Oxygen.'
+            )
+        load.pop('env')
 
     ret = []
 
@@ -437,8 +441,17 @@ def _refresh_buckets_cache_file(cache_file):
                         continue
                     except KeyError:
                         # no human readable error message provided
-                        log.warning("'{0}' response for bucket '{1}'".format(meta_response['Code'], bucket_name))
-                        continue
+                        if 'Code' in meta_response:
+                            log.warning(
+                                ("'{0}' response for "
+                                "bucket '{1}'").format(meta_response['Code'],
+                                                       bucket_name))
+                            continue
+                        else:
+                            log.warning(
+                                 'S3 Error! Do you have any files '
+                                 'in your S3 bucket?')
+                            return {}
 
             metadata[saltenv] = bucket_files
 
@@ -467,8 +480,17 @@ def _refresh_buckets_cache_file(cache_file):
                     continue
                 except KeyError:
                     # no human readable error message provided
-                    log.warning("'{0}' response for bucket '{1}'".format(meta_response['Code'], bucket_name))
-                    continue
+                    if 'Code' in meta_response:
+                        log.warning(
+                            ("'{0}' response for "
+                            "bucket '{1}'").format(meta_response['Code'],
+                                                   bucket_name))
+                        continue
+                    else:
+                        log.warning(
+                             'S3 Error! Do you have any files '
+                             'in your S3 bucket?')
+                        return {}
 
             environments = [(os.path.dirname(k['Key']).split('/', 1))[0] for k in files]
             environments = set(environments)
@@ -633,10 +655,10 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                         for header_name, header_value in ret['headers'].items():
                             name = header_name.strip()
                             value = header_value.strip()
-                            if name == 'Last-Modified'.lower():
+                            if str(name).lower() == 'last-modified':
                                 s3_file_mtime = datetime.datetime.strptime(
                                     value, '%a, %d %b %Y %H:%M:%S %Z')
-                            elif name == 'Content-Length'.lower():
+                            elif str(name).lower() == 'content-length':
                                 s3_file_size = int(value)
                         if (cached_file_size == s3_file_size and
                                 cached_file_mtime > s3_file_mtime):

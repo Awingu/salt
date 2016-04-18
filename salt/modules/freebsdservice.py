@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
 The service module for FreeBSD
+
+.. important::
+    If you feel that Salt should be using this module to manage services on a
+    minion, and it is using a different module (or gives an error similar to
+    *'service.start' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 from __future__ import absolute_import
 
@@ -25,12 +31,12 @@ __virtualname__ = 'service'
 
 def __virtual__():
     '''
-    Only work on systems which default to systemd
+    Only work on FreeBSD
     '''
     # Disable on these platforms, specific service modules exist:
     if __grains__['os'] == 'FreeBSD':
         return __virtualname__
-    return False
+    return (False, 'The freebsdservice execution module cannot be loaded: only available on FreeBSD systems.')
 
 
 @decorators.memoize
@@ -162,7 +168,7 @@ def _switch(name,                   # pylint: disable=C0103
                 edited = True
     if not edited:
         # Ensure that the file ends in a \n
-        if nlines[-1][-1] != '\n':
+        if len(nlines) > 1 and nlines[-1][-1] != '\n':
             nlines[-1] = '{0}\n'.format(nlines[-1])
         nlines.append('{0}="{1}"\n'.format(rcvar, val))
 

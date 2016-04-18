@@ -12,8 +12,9 @@
 from __future__ import absolute_import
 
 # Import Salt libs
-import salt.client.spm
+import salt.spm
 import salt.utils.parsers as parsers
+from salt.utils.verify import verify_log
 
 
 class SPM(parsers.SPMParser):
@@ -25,7 +26,9 @@ class SPM(parsers.SPMParser):
         '''
         Run the api
         '''
+        ui = salt.spm.SPMCmdlineInterface()
         self.parse_args()
         self.setup_logfile_logger()
-        client = salt.client.spm.SPMClient(self.config)
+        verify_log(self.config)
+        client = salt.spm.SPMClient(ui, self.config)
         client.run(self.args)

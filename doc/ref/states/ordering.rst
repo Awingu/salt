@@ -30,7 +30,7 @@ Salt always executes states in a finite manner, meaning that they will always
 execute in the same order regardless of the system that is executing them.
 But in Salt 0.17.0, the ``state_auto_order`` option was added. This option
 makes states get evaluated in the order in which they are defined in sls
-files.
+files, including the top.sls file.
 
 The evaluation order makes it easy to know what order the states will be
 executed in, but it is important to note that the requisite system will
@@ -38,7 +38,9 @@ override the ordering defined in the files, and the ``order`` option described
 below will also override the order in which states are defined in sls files.
 
 If the classic ordering is preferred (lexicographic), then set
-``state_auto_order`` to ``False`` in the master configuration file.
+``state_auto_order`` to ``False`` in the master configuration file. Otherwise,
+``state_auto_order`` defaults to ``True``.
+
 
 .. _ordering_requisites:
 
