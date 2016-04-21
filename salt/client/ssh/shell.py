@@ -343,16 +343,16 @@ class Shell(object):
                     ret_stdout += stdout
                 if stderr:
                     ret_stderr += stderr
-                if stdout and SSH_PASSWORD_PROMPT_RE.search(stdout):
-                    if not self.passwd:
-                        return '', 'Permission denied, no authentication information', 254
-                    if sent_passwd < passwd_retries:
-                        term.sendline(self.passwd)
-                        sent_passwd += 1
-                        continue
-                    else:
-                        # asking for a password, and we can't seem to send it
-                        return '', 'Password authentication failed', 254
+                # if stdout and SSH_PASSWORD_PROMPT_RE.search(stdout):
+                #     if not self.passwd:
+                #         return '', 'Permission denied, no authentication information', 254
+                #     if sent_passwd < passwd_retries:
+                #         term.sendline(self.passwd)
+                #         sent_passwd += 1
+                #         continue
+                #     else:
+                #         # asking for a password, and we can't seem to send it
+                #         return '', 'Password authentication failed', 254
                 elif stdout and KEY_VALID_RE.search(stdout):
                     if key_accept:
                         term.sendline('yes')
